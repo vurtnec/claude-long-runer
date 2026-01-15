@@ -23,7 +23,7 @@ def process(response: str, state: Any) -> None:
     current_batch = state.get("current_batch", [])
     if not current_batch and state.get("phase") == "migrating":
         _initialize_first_batch(state)
-        return
+        # Don't return here - continue to process agent's JSON output if present
 
     # Extract JSON block from response
     json_data = _extract_json(response)
