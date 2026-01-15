@@ -1,0 +1,26 @@
+{
+  "name": "i18n_migration",
+  "description": "Migrate frontend components to use i18n translations with next-intl",
+  "state_file": "i18n_migration_state.json",
+  "initial_state": {
+    "phase": "init",
+    "pending_files": [],
+    "completed_files": [],
+    "failed_files": [],
+    "current_batch": [],
+    "batch_size": 5,
+    "total_files": 0,
+    "pending_count": 0,
+    "completed_count": 0,
+    "failed_count": 0
+  },
+  "success_conditions": [
+    {
+      "type": "state_equals",
+      "key": "phase",
+      "value": "completed"
+    }
+  ],
+  "delay_seconds": 5,
+  "state_processor": "processor.py"
+}
