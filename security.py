@@ -20,6 +20,8 @@ ALLOWED_COMMANDS = {
     "tail",
     "wc",
     "grep",
+    "echo",
+    "printf",
     # File operations (agent uses SDK tools for most file ops, but cp/mkdir needed occasionally)
     "cp",
     "mkdir",
@@ -29,6 +31,8 @@ ALLOWED_COMMANDS = {
     "cd",
     # Node.js development
     "npm",
+    "pnpm",
+    "npx",
     "node",
     # Python development
     "python",

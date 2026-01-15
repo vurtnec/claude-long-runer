@@ -1,47 +1,73 @@
 # i18n Migration - Initialization
 
-## Your Task
-Initialize the automated i18n migration for the Satellica frontend project.
-
-## Background
-- Project path: {project_dir}
-- Translation files: `frontend/messages/en.json`, `frontend/messages/zh.json`
-- Using next-intl library with client-side locale management
-- i18n infrastructure is already set up
+## Project Context
+- Project: Satellica Frontend
+- Working directory: {project_dir}
+- Translation files: `messages/en.json`, `messages/zh.json`
+- Library: next-intl (already configured)
+- Total files to process: {total_files}
 
 ## Reference Examples
-The following files have been migrated to i18n and serve as your reference templates:
-- `frontend/components/nav-user.tsx` - User navigation dropdown with translations
-- `frontend/components/language-switcher.tsx` - Language switcher component
+The following files have been migrated and serve as templates:
+- `components/nav-user.tsx` - Uses `useTranslations('auth')` for account settings text
+- `components/language-switcher.tsx` - Language dropdown component
 
-## This Iteration's Task: Scan Files to Process
+## Your Task
 
-1. Scan the following directories for .tsx files containing hardcoded Chinese or English user-visible strings:
-   - `frontend/components/` (excluding `frontend/components/ui/`)
-   - `frontend/modules/`
-   - `frontend/app/`
+This is the first iteration. The file list has been pre-loaded with {pending_count} files.
 
-2. Exclude the following:
-   - `frontend/components/ui/` (shadcn UI components - do not modify)
-   - Files already using `useTranslations` from next-intl
-   - Pure utility/config files without user-visible text
-   - Type definition files (.d.ts)
+1. **Prepare the first batch**: Take the first {batch_size} files from `pending_files`
+2. **Review each file**: Check if it contains user-visible hardcoded text that needs i18n
+3. **For files WITH hardcoded text**: Migrate them following the standards below
+4. **For files WITHOUT hardcoded text**: Mark as skipped (no changes needed)
+5. **Verify**: Run `pnpm build` and `pnpm lint` in the frontend directory
 
-3. For each file, look for:
-   - Text content in JSX elements: `<Button>Save</Button>`
-   - Placeholder text: `placeholder="Enter name"`
-   - Title/aria-label attributes: `title="Settings"`
-   - Alert/toast messages
-   - Error messages shown to users
+## Migration Standards
 
-4. Output format (JSON block):
-```json
-{{
-  "action": "set_pending_files",
-  "pending_files": ["components/nav-main.tsx", "modules/study/form.tsx", ...],
-  "total_files": 150
+```tsx
+// Before
+<Button>Save Changes</Button>
+<Input placeholder="Enter email" />
+
+// After
+'use client';
+import {{ useTranslations }} from 'next-intl';
+
+export function MyComponent() {{
+  const t = useTranslations('namespace');
+  return (
+    <>
+      <Button>{{t('saveChanges')}}</Button>
+      <Input placeholder={{t('emailPlaceholder')}} />
+    </>
+  );
 }}
 ```
 
-**Important**: Only output the file list. Do not start migrating files in this iteration.
-**Note**: Use relative paths from the frontend directory (e.g., "components/nav-main.tsx" not full absolute paths).
+## Translation Key Naming
+- Use camelCase: `saveChanges`, `emailPlaceholder`
+- Group by feature: `account.title`, `study.create`, `common.save`
+- Keep keys concise but descriptive
+
+## Required Output
+
+After processing the batch, output this JSON:
+
+```json
+{{
+  "action": "batch_complete",
+  "processed": ["file1.tsx", "file2.tsx", "file3.tsx"],
+  "succeeded": ["file1.tsx", "file2.tsx"],
+  "failed": [],
+  "skipped": ["file3.tsx"],
+  "fail_reasons": {{}},
+  "skip_reasons": {{"file3.tsx": "No user-visible text"}}
+}}
+```
+
+## Important Rules
+1. **Only process files in the current batch**
+2. **Run `pnpm build` and `pnpm lint`** after modifications - files must pass both
+3. **If build/lint fails**: Fix the issue or mark as failed
+4. **Files without hardcoded text**: Mark as skipped, not failed
+5. **Always output the JSON block** at the end

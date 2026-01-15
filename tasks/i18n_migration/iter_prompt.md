@@ -1,13 +1,15 @@
 # i18n Migration - Iteration {iteration}
 
-## Current Progress
-- Total files: {total_files}
-- Pending: {pending_count} files
-- Completed: {completed_count} files
-- Failed: {failed_count} files
-- Batch size: {batch_size}
+## Progress Summary
+| Metric | Count |
+|--------|-------|
+| Total files | {total_files} |
+| Pending | {pending_count} |
+| Completed | {completed_count} |
+| Skipped | {skipped_count} |
+| Failed | {failed_count} |
 
-## Files to Process This Iteration
+## Current Batch ({batch_size} files)
 {current_batch_display}
 
 ## Your Task
@@ -16,82 +18,93 @@
 
 For each file in the current batch:
 
-1. **Read the file** - Understand the component structure
-2. **Extract strings** - Find all user-visible hardcoded text
-3. **Add translations** - Update `frontend/messages/en.json` and `frontend/messages/zh.json`
-4. **Migrate the component** - Import useTranslations, replace hardcoded text
-5. **Verify** - Ensure TypeScript compiles without errors
+1. **Read the file** - Check if it has user-visible hardcoded text
+2. **If NO hardcoded text** - Mark as skipped
+3. **If HAS hardcoded text**:
+   - Extract all user-visible strings
+   - Add translations to `messages/en.json` and `messages/zh.json`
+   - Import `useTranslations` and replace hardcoded text
+4. **Verify** - Run `pnpm build` and `pnpm lint` in frontend/
+5. **Fix any errors** - If build/lint fails, fix it or mark as failed
 
-### Migration Standards
+### Migration Pattern
 
 ```tsx
 // Before migration
-<Button>Save Changes</Button>
-<Input placeholder="Enter your email" />
-<span>No items found</span>
+export function MyComponent() {{
+  return (
+    <div>
+      <h1>Welcome to Dashboard</h1>
+      <Button>Save Changes</Button>
+      <Input placeholder="Enter your email" />
+    </div>
+  );
+}}
 
 // After migration
+'use client';
 import {{ useTranslations }} from 'next-intl';
 
 export function MyComponent() {{
-  const t = useTranslations('myComponent');
-
+  const t = useTranslations('dashboard');
   return (
-    <>
+    <div>
+      <h1>{{t('welcome')}}</h1>
       <Button>{{t('saveChanges')}}</Button>
       <Input placeholder={{t('emailPlaceholder')}} />
-      <span>{{t('noItemsFound')}}</span>
-    </>
+    </div>
   );
 }}
 ```
 
-### Translation Key Naming Convention
-- Use camelCase: `saveChanges`, `emailPlaceholder`
-- Group by namespace: `nav.dashboard`, `study.createNew`, `common.save`
-- Keep keys concise but meaningful
-- Use existing namespaces when appropriate:
-  - `nav` - Navigation items
-  - `common` - Shared/reusable text (Save, Cancel, Delete, etc.)
-  - `auth` - Authentication related
-  - Create new namespaces for specific modules (e.g., `study`, `participant`)
-
-### Translation File Format
-When adding translations, merge into existing JSON structure:
+### Translation Files Format
 
 ```json
-// frontend/messages/en.json
+// messages/en.json - ADD to existing content
 {{
-  "existing": "...",
-  "newNamespace": {{
-    "newKey": "English text"
+  "dashboard": {{
+    "welcome": "Welcome to Dashboard",
+    "saveChanges": "Save Changes",
+    "emailPlaceholder": "Enter your email"
   }}
 }}
 
-// frontend/messages/zh.json
+// messages/zh.json - ADD to existing content
 {{
-  "existing": "...",
-  "newNamespace": {{
-    "newKey": "Chinese translation"
+  "dashboard": {{
+    "welcome": "欢迎来到仪表盘",
+    "saveChanges": "保存更改",
+    "emailPlaceholder": "请输入邮箱"
   }}
 }}
 ```
 
-### Output After Completing This Batch
+### Namespace Guidelines
+- `common` - Shared text (Save, Cancel, Delete, Loading, etc.)
+- `auth` - Authentication (Sign In, Sign Out, etc.)
+- `account` - Account settings
+- `study` - Study-related
+- `interview` - Interview module
+- `recruitment` - Recruitment module
+- `admin` - Admin pages
+
+### Required Output
 
 ```json
 {{
   "action": "batch_complete",
-  "processed": ["file1.tsx", "file2.tsx", ...],
-  "succeeded": ["file1.tsx", ...],
+  "processed": ["file1.tsx", "file2.tsx", "file3.tsx"],
+  "succeeded": ["file1.tsx"],
   "failed": ["file2.tsx"],
-  "fail_reasons": {{"file2.tsx": "Complex dynamic string concatenation - needs manual review"}}
+  "skipped": ["file3.tsx"],
+  "fail_reasons": {{"file2.tsx": "Build error: Cannot find module..."}},
+  "skip_reasons": {{"file3.tsx": "No user-visible text"}}
 }}
 ```
 
 ### If pending_count === 0:
 
-All files have been processed! Output:
+All files processed! Output:
 
 ```json
 {{
@@ -99,20 +112,24 @@ All files have been processed! Output:
   "summary": {{
     "total": {total_files},
     "succeeded": {completed_count},
+    "skipped": {skipped_count},
     "failed": {failed_count}
   }}
 }}
 ```
 
-## Reference: Already Migrated Files
-Look at these for patterns:
-- `frontend/components/nav-user.tsx` - useTranslations('auth')
-- `frontend/components/language-switcher.tsx` - Language dropdown
+## Critical Rules
 
-## Important Reminders
-1. **Only process files in the current batch** - do not touch other files
-2. **Skip failed files** - mark them as failed and move on, do not retry
-3. **Keep translation files valid JSON** - be careful with commas and brackets
-4. **Translate accurately** - provide proper Chinese translations, not just pinyin
-5. **Run `pnpm tsc --noEmit` in frontend/** to verify after modifications
-6. **Always output the JSON block** at the end of your response
+1. **ONLY process files in current_batch** - Do not touch other files
+2. **Run verification after EACH batch**:
+   ```bash
+   cd frontend && pnpm build && pnpm lint
+   ```
+3. **Build/lint MUST pass** - If they fail, either fix or mark as failed
+4. **No hardcoded text = skipped** - Not failed
+5. **Preserve existing translations** - Merge, don't overwrite
+6. **Output JSON at the end** - Required for progress tracking
+
+## Reference Files
+Already migrated (use as examples):
+- `components/nav-user.tsx` - Uses `useTranslations('auth')`

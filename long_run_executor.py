@@ -215,7 +215,9 @@ async def run_long_task(
         # Choose prompt based on whether this is the first run
         if is_first_run:
             try:
-                prompt = task_config.format_init_prompt(**task_params)
+                # Merge task params with current state for init prompt
+                prompt_vars = {**task_params, **state.data}
+                prompt = task_config.format_init_prompt(**prompt_vars)
                 is_first_run = False  # Only use initializer once
                 print("[Using initialization prompt]")
             except ValueError as e:
