@@ -85,6 +85,7 @@ python long_run_executor.py --task <task_name> --params '<json_params>'
 | `--params` | Yes | JSON string with task parameters |
 | `--max-iterations` | No | Maximum iterations (default: 5) |
 | `--project-dir` | No | Working directory (default: `.`) |
+| `--model` | No | Claude model (default: `claude-sonnet-4-5-20250929`) |
 | `--resume` | No | Resume from saved state |
 
 ### Creating Custom Tasks
@@ -196,7 +197,9 @@ graph TD
 - Async session handling
 - Error recovery
 
-## Example: PR Review Task
+## Example Tasks
+
+### PR Review Task
 
 The included PR review task demonstrates a complete workflow:
 
@@ -209,7 +212,78 @@ The included PR review task demonstrates a complete workflow:
 4. Re-review to verify fixes
 5. Repeat until "no critical issues" detected
 
+**Usage**:
+```bash
+python long_run_executor.py \
+  --task pr_review \
+  --params '{"pr_number": 453}' \
+  --max-iterations 3 \
+  --project-dir /path/to/your/project
+```
+
 **Configuration**: See [tasks/pr_review/](tasks/pr_review/)
+
+### i18n Migration Task
+
+Batch-process files to add internationalization translations.
+
+**Usage**:
+```bash
+python long_run_executor.py \
+  --task i18n_migration \
+  --params '{"project_dir": "/path/to/frontend"}' \
+  --max-iterations 100 \
+  --project-dir /path/to/frontend
+```
+
+**Configuration**: See [tasks/i18n_migration/](tasks/i18n_migration/)
+
+### Font Migration Task
+
+Migrate SwiftUI files from system fonts to custom fonts (e.g., JetBrains Mono).
+
+**Features**:
+- Batch processing (5 files per iteration)
+- Converts `.system()` fonts to `.custom("JetBrainsMono-*")`
+- Converts semantic fonts (`.title`, `.body`, etc.) to specific sizes
+- Removes redundant `.fontWeight()` modifiers
+- Tracks progress with succeeded/failed/skipped status
+
+**Usage**:
+```bash
+# First run - full migration
+python long_run_executor.py \
+  --task font_migration \
+  --params '{"project_dir": "/path/to/ios-project"}' \
+  --max-iterations 15 \
+  --model claude-opus-4-5-20251101 \
+  --project-dir /path/to/ios-project
+
+# Resume interrupted task
+python long_run_executor.py \
+  --task font_migration \
+  --params '{"project_dir": "/path/to/ios-project"}' \
+  --max-iterations 15 \
+  --model claude-opus-4-5-20251101 \
+  --project-dir /path/to/ios-project \
+  --resume
+
+# Reset and start fresh
+rm /path/to/ios-project/font_migration_state.json
+```
+
+**Font Replacement Rules**:
+| Original | Replacement |
+|----------|-------------|
+| `.system(size: N)` | `.custom("JetBrainsMono-Regular", size: N)` |
+| `.system(size: N, weight: .medium/.semibold)` | `.custom("JetBrainsMono-Medium", size: N)` |
+| `.system(size: N, weight: .bold)` | `.custom("JetBrainsMono-Bold", size: N)` |
+| `.title` | `.custom("JetBrainsMono-Bold", size: 34)` |
+| `.headline` | `.custom("JetBrainsMono-Medium", size: 17)` |
+| `.body` | `.custom("JetBrainsMono-Regular", size: 17)` |
+| `.caption` | `.custom("JetBrainsMono-Regular", size: 12)` |
+
+**Configuration**: See [tasks/font_migration/](tasks/font_migration/)
 
 ## Comparison with Official Project
 
