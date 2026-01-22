@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from claude_code_sdk import ClaudeSDKClient
+from claude_agent_sdk import ClaudeSDKClient
 
 from client import create_client
 from success_checker import SuccessChecker

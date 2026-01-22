@@ -44,6 +44,7 @@ ALLOWED_COMMANDS = {
     "ps",
     "lsof",
     "sleep",
+    "find",
     "pkill",  # For killing dev servers; validated separately
     # Script execution
     "init.sh",  # Init scripts; validated separately
