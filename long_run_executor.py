@@ -176,6 +176,12 @@ async def run_long_task(
         state_file=str(state_file_path),
         initial_state=task_config.initial_state,
     )
+
+    # Merge task params into state (so processor can access them)
+    params_to_merge = {k: v for k, v in task_params.items() if k not in state.data}
+    if params_to_merge:
+        state.update(**params_to_merge)
+
     print(f"State: {state}")
     print()
 
@@ -197,6 +203,20 @@ async def run_long_task(
         print("Continuing existing task")
 
     print()
+
+    # 4.5. Pre-run processor for first iteration to initialize state
+    if is_first_run and task_config.state_processor:
+        processor_path = tasks_dir / task_name / task_config.state_processor
+        if processor_path.exists():
+            print("Pre-running state processor to initialize file list...")
+            try:
+                processor = load_processor(processor_path)
+                processor.process("", state)  # Empty response for initialization
+                print("State processor initialized successfully")
+                print()
+            except Exception as e:
+                print(f"Warning: State processor initialization failed: {e}")
+                print()
 
     # 5. Main execution loop
     iteration = state.get("iteration", 0)
