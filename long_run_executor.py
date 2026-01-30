@@ -21,10 +21,37 @@ import asyncio
 import importlib.util
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from claude_agent_sdk import ClaudeSDKClient
+
+
+class TeeLogger:
+    """Logger that writes to both stdout and a log file simultaneously."""
+
+    def __init__(self, log_file: Path):
+        self.terminal = sys.stdout
+        self.terminal_stderr = sys.stderr
+        self.log_file = open(log_file, "a", encoding="utf-8")
+        # Write session header
+        self.log_file.write(f"\n{'='*70}\n")
+        self.log_file.write(f"Session started: {datetime.now().isoformat()}\n")
+        self.log_file.write(f"{'='*70}\n\n")
+        self.log_file.flush()
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log_file.write(message)
+        self.log_file.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log_file.flush()
+
+    def close(self):
+        self.log_file.close()
 
 from client import create_client
 from success_checker import SuccessChecker
@@ -415,6 +442,18 @@ Examples:
     project_dir = Path(args.project_dir).resolve()
     project_dir.mkdir(parents=True, exist_ok=True)
 
+    # Set up logging to file
+    # Extract task name (handle paths like "tasks/feature_story" or just "feature_story")
+    task_name_for_log = Path(args.task).name
+    log_file = project_dir / f"{task_name_for_log}.log"
+    tee_logger = TeeLogger(log_file)
+
+    # Redirect stdout and stderr to tee logger
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sys.stdout = tee_logger
+    sys.stderr = tee_logger
+
     # Run the task
     try:
         success = asyncio.run(
@@ -428,18 +467,27 @@ Examples:
             )
         )
 
+        print(f"\nLog saved to: {log_file}")
         sys.exit(0 if success else 1)
 
     except KeyboardInterrupt:
         print("\n\n⏸️  Interrupted by user. Progress saved to state file.")
+        print(f"Log saved to: {log_file}")
         sys.exit(130)
 
     except Exception as e:
-        print(f"\n\n❌ Fatal error: {e}", file=sys.stderr)
+        print(f"\n\n❌ Fatal error: {e}")
         import traceback
 
         traceback.print_exc()
+        print(f"Log saved to: {log_file}")
         sys.exit(1)
+
+    finally:
+        # Restore original stdout/stderr and close log file
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        tee_logger.close()
 
 
 if __name__ == "__main__":
