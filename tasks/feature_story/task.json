@@ -4,6 +4,7 @@
   "state_file": "feature_story_state.json",
   "spec_file": "spec.yaml",
   "initial_state": {
+    "spec_file": "spec.yaml",
     "phase": "initializing",
     "current_step": 1,
     "total_steps": 0,

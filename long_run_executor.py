@@ -182,6 +182,10 @@ async def run_long_task(
     if params_to_merge:
         state.update(**params_to_merge)
 
+    # Auto-inject project_dir into state (so processors can access it without redundant params)
+    if "project_dir" not in state.data:
+        state.update(project_dir=str(project_dir))
+
     print(f"State: {state}")
     print()
 

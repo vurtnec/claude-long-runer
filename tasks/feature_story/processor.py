@@ -38,15 +38,15 @@ def process(response: str, state: Any) -> None:
 
 def _initialize_from_spec(state: Any) -> None:
     """Load spec.yaml and initialize state."""
-    # Find spec file - look in task directory
-    task_dir = state.get("_task_dir", "")
-    spec_file = state.get("_spec_file", "spec.yaml")
+    # Get project_dir from state (auto-injected by long_run_executor.py)
+    project_dir = state.get("project_dir", ".")
+    spec_file = state.get("spec_file", "spec.yaml")
 
-    # Try multiple locations
+    # Try multiple locations for spec file
     possible_paths = [
-        Path(task_dir) / spec_file if task_dir else None,
-        Path("tasks/feature_story") / spec_file,
-        Path(spec_file),
+        Path(project_dir) / spec_file,  # In project directory
+        Path("tasks/feature_story") / spec_file,  # In task template
+        Path(spec_file),  # Current directory
     ]
 
     spec_path = None

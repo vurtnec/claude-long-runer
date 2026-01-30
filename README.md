@@ -11,7 +11,8 @@ pip install -r requirements.txt
 # Run a task
 python long_run_executor.py \
   --task tasks/repetitive_work \
-  --params '{"project_dir": "./src", "file_pattern": "*.py"}' \
+  --params '{"file_pattern": "*.py"}' \
+  --project-dir ./src \
   --max-iterations 20
 ```
 
@@ -31,7 +32,8 @@ For batch processing tasks: unit test generation, code audits, migrations, etc.
 ```bash
 python long_run_executor.py \
   --task tasks/repetitive_work \
-  --params '{"project_dir": "/path/to/project", "file_pattern": "*.tsx"}' \
+  --params '{"file_pattern": "*.tsx"}' \
+  --project-dir /path/to/project \
   --max-iterations 50
 ```
 
@@ -93,9 +95,9 @@ success_criteria:
 | Option | Description |
 |--------|-------------|
 | `--task` | Task directory path |
-| `--params` | JSON parameters |
+| `--params` | JSON parameters (task-specific options) |
+| `--project-dir` | Working directory (auto-injected to state) |
 | `--max-iterations` | Max iterations (default: 5) |
-| `--project-dir` | Working directory |
 | `--model` | Claude model (default: claude-sonnet-4-5-20250929) |
 | `--resume` | Resume from saved state |
 

@@ -35,24 +35,24 @@
 3. When all tasks are done and acceptance passes, output JSON:
 
 ```json
-{
+{{
   "action": "step_complete",
   "step": {current_step},
-  "results": {
+  "results": {{
     "tasks_completed": ["task1", "task2", "..."],
     "acceptance_passed": true,
     "notes": "Optional notes about implementation"
-  }
-}
+  }}
+}}
 ```
 
 If acceptance fails, output:
 ```json
-{
+{{
   "action": "step_failed",
   "step": {current_step},
   "reason": "Description of what failed"
-}
+}}
 ```
 
 ---

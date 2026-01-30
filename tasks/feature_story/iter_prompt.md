@@ -19,12 +19,12 @@ Continue implementing the current step.
 
 When done, output JSON:
 ```json
-{
+{{
   "action": "step_complete",
   "step": {current_step},
-  "results": {
+  "results": {{
     "tasks_completed": ["..."],
     "acceptance_passed": true
-  }
-}
+  }}
+}}
 ```
