@@ -1,0 +1,19 @@
+{
+  "name": "feature_story",
+  "description": "Template for feature development with acceptance criteria",
+  "state_file": "feature_story_state.json",
+  "initial_state": {
+    "phase": "implementing",
+    "features": [],
+    "current_feature_index": 0,
+    "completed_features": [],
+    "verification_results": []
+  },
+  "success_conditions": [
+    {
+      "type": "text_contains",
+      "text": "ALL_FEATURES_COMPLETED_AND_VERIFIED"
+    }
+  ],
+  "delay_seconds": 3
+}

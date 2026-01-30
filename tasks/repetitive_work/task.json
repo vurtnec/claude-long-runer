@@ -1,0 +1,24 @@
+{
+  "name": "repetitive_work",
+  "description": "Template for batch processing tasks - unit test generation, code audits, migrations, etc.",
+  "state_file": "repetitive_work_state.json",
+  "initial_state": {
+    "phase": "initializing",
+    "pending_files": [],
+    "completed_files": [],
+    "failed_files": [],
+    "skipped_files": [],
+    "current_batch": [],
+    "batch_size": 3,
+    "total_files": 0
+  },
+  "success_conditions": [
+    {
+      "type": "state_equals",
+      "key": "phase",
+      "value": "completed"
+    }
+  ],
+  "delay_seconds": 2,
+  "state_processor": "processor.py"
+}

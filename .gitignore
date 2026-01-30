@@ -34,3 +34,8 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Tasks - only track templates, ignore all other task directories
+tasks/*
+!tasks/repetitive_work/
+!tasks/feature_story/
