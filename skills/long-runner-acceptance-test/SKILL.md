@@ -3,7 +3,7 @@ name: long-runner-acceptance-test
 description: |
   Runs acceptance tests for claude-long-runner feature_story tasks.
   Supports code verification (bash commands) and browser verification
-  (using configurable MCP browser tools like Playwright, BrowserMCP, etc.).
+  (using configurable MCP browser tools like Playwright, Puppeteer, BrowserMCP, etc.).
 
   Use this skill when:
   - You need to run acceptance tests for a feature_story step
@@ -40,6 +40,7 @@ First, read the task configuration to determine which browser tool to use:
 | browser_tool | MCP Tool Prefix |
 |--------------|-----------------|
 | `playwright` (default) | `mcp__playwright__browser_` |
+| `puppeteer` | `mcp__puppeteer__puppeteer_` |
 | `browsermcp` | `mcp__browsermcp__browser_` |
 | `browser-tool` | `mcp__browser-tool__` |
 
@@ -90,15 +91,16 @@ For each acceptance criterion with `type: browser`:
 
 Based on the `browser_tool` configuration, map actions to MCP tool calls:
 
-| Action | playwright | browsermcp |
-|--------|-----------|------------|
-| navigate | `mcp__playwright__browser_navigate` | `mcp__browsermcp__browser_navigate` |
-| snapshot | `mcp__playwright__browser_snapshot` | `mcp__browsermcp__browser_snapshot` |
-| click | `mcp__playwright__browser_click` | `mcp__browsermcp__browser_click` |
-| type | `mcp__playwright__browser_type` | `mcp__browsermcp__browser_type` |
-| hover | `mcp__playwright__browser_hover` | `mcp__browsermcp__browser_hover` |
-| select | `mcp__playwright__browser_select_option` | `mcp__browsermcp__browser_select_option` |
-| wait | `mcp__playwright__browser_wait_for` | `mcp__browsermcp__browser_wait` |
+| Action | playwright | puppeteer | browsermcp |
+|--------|-----------|-----------|------------|
+| navigate | `mcp__playwright__browser_navigate` | `mcp__puppeteer__puppeteer_navigate` | `mcp__browsermcp__browser_navigate` |
+| snapshot | `mcp__playwright__browser_snapshot` | `mcp__puppeteer__puppeteer_screenshot` | `mcp__browsermcp__browser_snapshot` |
+| click | `mcp__playwright__browser_click` | `mcp__puppeteer__puppeteer_click` | `mcp__browsermcp__browser_click` |
+| type/fill | `mcp__playwright__browser_type` | `mcp__puppeteer__puppeteer_fill` | `mcp__browsermcp__browser_type` |
+| hover | `mcp__playwright__browser_hover` | `mcp__puppeteer__puppeteer_hover` | `mcp__browsermcp__browser_hover` |
+| select | `mcp__playwright__browser_select_option` | `mcp__puppeteer__puppeteer_select` | `mcp__browsermcp__browser_select_option` |
+| wait | `mcp__playwright__browser_wait_for` | - | `mcp__browsermcp__browser_wait` |
+| evaluate | `mcp__playwright__browser_evaluate` | `mcp__puppeteer__puppeteer_evaluate` | - |
 
 ### Verify Action
 

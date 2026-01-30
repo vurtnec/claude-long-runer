@@ -180,6 +180,7 @@ Supported browser tools:
 | browser_tool | MCP Tool Prefix |
 |--------------|-----------------|
 | `playwright` (default) | `mcp__playwright__browser_*` |
+| `puppeteer` | `mcp__puppeteer__puppeteer_*` |
 | `browsermcp` | `mcp__browsermcp__browser_*` |
 | `browser-tool` | `mcp__browser-tool__*` |
 

@@ -161,8 +161,19 @@ async def run_long_task(
 
     # 1. Load task configuration
     try:
-        tasks_dir = Path(__file__).parent / "tasks"
-        task_config = TaskConfig.load(str(tasks_dir / task_name))
+        task_path = Path(task_name)
+
+        # If task_name is absolute path, use directly
+        if task_path.is_absolute():
+            task_dir = task_path
+        # If task_name starts with "tasks/", it's already relative to project root
+        elif task_name.startswith("tasks/") or task_name.startswith("tasks\\"):
+            task_dir = Path(__file__).parent / task_name
+        # Otherwise, assume it's just the task name
+        else:
+            task_dir = Path(__file__).parent / "tasks" / task_name
+
+        task_config = TaskConfig.load(str(task_dir))
         print(f"Loaded task: {task_config.description}")
         print()
     except Exception as e:
@@ -210,7 +221,7 @@ async def run_long_task(
 
     # 4.5. Pre-run processor for first iteration to initialize state
     if is_first_run and task_config.state_processor:
-        processor_path = tasks_dir / task_name / task_config.state_processor
+        processor_path = task_dir / task_config.state_processor
         if processor_path.exists():
             print("Pre-running state processor to initialize file list...")
             try:
@@ -272,7 +283,7 @@ async def run_long_task(
 
         # Run state processor if configured
         if task_config.state_processor:
-            processor_path = tasks_dir / task_name / task_config.state_processor
+            processor_path = task_dir / task_config.state_processor
             if processor_path.exists():
                 print(f"Running state processor: {task_config.state_processor}")
                 try:
