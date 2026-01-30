@@ -48,8 +48,9 @@ For step-by-step feature implementation based on a project specification.
 - Step-by-step implementation with progress tracking
 - Two verification methods:
   - **Code**: Run commands (npm test, pytest, etc.)
-  - **Browser**: Use Playwright MCP tools
+  - **Browser**: Use configurable MCP browser tools (Playwright, BrowserMCP, etc.)
 - Processor manages step transitions
+- Optional `/long-runner-acceptance-test` skill for automated verification
 
 **Usage**:
 ```bash
@@ -159,6 +160,29 @@ def process(response: str, state: Any) -> None:
 **repetitive_work**: Manages file batches (pending → completed/failed/skipped)
 **feature_story**: Manages implementation steps (step 1 → step 2 → ... → completed)
 
+## Installing the Skill (Optional)
+
+To use the `/long-runner-acceptance-test` skill for automated verification:
+
+```bash
+# Copy skill to Claude Code skills directory
+cp -r skills/long-runner-acceptance-test ~/.claude/skills/
+```
+
+Configure your browser MCP tool in `task.json`:
+```json
+{
+  "browser_tool": "playwright"  // or "browsermcp", "browser-tool"
+}
+```
+
+Supported browser tools:
+| browser_tool | MCP Tool Prefix |
+|--------------|-----------------|
+| `playwright` (default) | `mcp__playwright__browser_*` |
+| `browsermcp` | `mcp__browsermcp__browser_*` |
+| `browser-tool` | `mcp__browser-tool__*` |
+
 ## Architecture
 
 ```
@@ -170,6 +194,9 @@ claude-long-runner/
 ├── state_manager.py      # State persistence
 ├── success_checker.py    # Condition checker
 ├── security.py           # Command validation
+├── skills/               # Claude Code skills
+│   └── long-runner-acceptance-test/
+│       └── SKILL.md      # Acceptance test skill
 └── tasks/
     ├── repetitive_work/  # Batch processing template
     │   ├── task.json

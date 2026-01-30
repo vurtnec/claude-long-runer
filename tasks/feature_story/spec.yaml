@@ -52,13 +52,15 @@ implementation_steps:
       - type: browser
         url: "http://localhost:5173"
         steps:
+          - action: "navigate"
+          - action: "snapshot"
           - action: "verify"
             text: "Todo App"
           - action: "type"
-            selector: "input[name=todo]"
+            ref: "input[name=todo]"
             text: "Test todo item"
           - action: "click"
-            selector: "button[type=submit]"
+            ref: "button[type=submit]"
           - action: "verify"
             text: "Test todo item"
 

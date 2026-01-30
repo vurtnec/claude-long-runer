@@ -25,13 +25,9 @@
 ## Instructions
 
 1. Implement all tasks for the current step
-2. Run acceptance tests:
-   - **Code verification**: Run the specified command
-   - **Browser verification**: Use Playwright MCP tools:
-     - `mcp__playwright__browser_navigate` - Open URL
-     - `mcp__playwright__browser_snapshot` - Get page snapshot
-     - `mcp__playwright__browser_click` - Click elements
-     - `mcp__playwright__browser_type` - Type text
+2. Run acceptance tests using `/long-runner-acceptance-test`
+   - The skill will execute code commands and browser tests automatically
+   - Browser tool is configured in task.json (default: playwright)
 3. When all tasks are done and acceptance passes, output JSON:
 
 ```json

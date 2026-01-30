@@ -3,6 +3,7 @@
   "description": "Feature Story template - step-by-step implementation based on project specification",
   "state_file": "feature_story_state.json",
   "spec_file": "spec.yaml",
+  "browser_tool": "playwright",
   "initial_state": {
     "spec_file": "spec.yaml",
     "phase": "initializing",
