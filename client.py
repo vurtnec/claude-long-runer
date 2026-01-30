@@ -15,16 +15,50 @@ from claude_agent_sdk.types import HookMatcher
 from security import bash_security_hook
 
 
-# Puppeteer MCP tools for browser automation
-PUPPETEER_TOOLS = [
-    "mcp__puppeteer__puppeteer_navigate",
-    "mcp__puppeteer__puppeteer_screenshot",
-    "mcp__puppeteer__puppeteer_click",
-    "mcp__puppeteer__puppeteer_fill",
-    "mcp__puppeteer__puppeteer_select",
-    "mcp__puppeteer__puppeteer_hover",
-    "mcp__puppeteer__puppeteer_evaluate",
-]
+# Browser tool configurations
+BROWSER_TOOLS = {
+    "playwright": {
+        "tools": [
+            "mcp__playwright__browser_navigate",
+            "mcp__playwright__browser_snapshot",
+            "mcp__playwright__browser_click",
+            "mcp__playwright__browser_type",
+            "mcp__playwright__browser_hover",
+            "mcp__playwright__browser_select_option",
+            "mcp__playwright__browser_wait_for",
+            "mcp__playwright__browser_evaluate",
+            "mcp__playwright__browser_take_screenshot",
+        ],
+        "mcp_server": {"command": "npx", "args": ["@anthropic/playwright-mcp-server"]},
+        "name": "playwright",
+    },
+    "puppeteer": {
+        "tools": [
+            "mcp__puppeteer__puppeteer_navigate",
+            "mcp__puppeteer__puppeteer_screenshot",
+            "mcp__puppeteer__puppeteer_click",
+            "mcp__puppeteer__puppeteer_fill",
+            "mcp__puppeteer__puppeteer_select",
+            "mcp__puppeteer__puppeteer_hover",
+            "mcp__puppeteer__puppeteer_evaluate",
+        ],
+        "mcp_server": {"command": "npx", "args": ["puppeteer-mcp-server"]},
+        "name": "puppeteer",
+    },
+    "browsermcp": {
+        "tools": [
+            "mcp__browsermcp__browser_navigate",
+            "mcp__browsermcp__browser_snapshot",
+            "mcp__browsermcp__browser_click",
+            "mcp__browsermcp__browser_type",
+            "mcp__browsermcp__browser_hover",
+            "mcp__browsermcp__browser_select_option",
+            "mcp__browsermcp__browser_wait",
+        ],
+        "mcp_server": {"command": "npx", "args": ["@anthropic/browsermcp"]},
+        "name": "browsermcp",
+    },
+}
 
 # Built-in tools
 BUILTIN_TOOLS = [
@@ -38,7 +72,7 @@ BUILTIN_TOOLS = [
 ]
 
 
-def create_client(project_dir: Path, model: str) -> ClaudeSDKClient:
+def create_client(project_dir: Path, model: str, browser_tool: str = "playwright") -> ClaudeSDKClient:
     """
     Create a Claude Agent SDK client with multi-layered security.
 
@@ -55,6 +89,12 @@ def create_client(project_dir: Path, model: str) -> ClaudeSDKClient:
     3. Security hooks - Bash commands validated against an allowlist
        (see security.py for ALLOWED_COMMANDS)
     """
+    # Get browser configuration
+    browser_config = BROWSER_TOOLS.get(browser_tool, BROWSER_TOOLS["playwright"])
+    browser_tools = browser_config["tools"]
+    browser_mcp_server = browser_config["mcp_server"]
+    browser_name = browser_config["name"]
+
     # API key is optional - Claude Code SDK can use Claude CLI subscription
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     # Note: If api_key is None, SDK will attempt to use Claude Code CLI authentication
@@ -76,8 +116,8 @@ def create_client(project_dir: Path, model: str) -> ClaudeSDKClient:
                 # Bash permission granted here, but actual commands are validated
                 # by the bash_security_hook (see security.py for allowed commands)
                 "Bash(*)",
-                # Allow Puppeteer MCP tools for browser automation
-                *PUPPETEER_TOOLS,
+                # Allow browser MCP tools for browser automation
+                *browser_tools,
             ],
         },
     }
@@ -94,7 +134,7 @@ def create_client(project_dir: Path, model: str) -> ClaudeSDKClient:
     print("   - Sandbox enabled (OS-level bash isolation)")
     print(f"   - Filesystem restricted to: {project_dir.resolve()}")
     print("   - Bash commands restricted to allowlist (see security.py)")
-    print("   - MCP servers: puppeteer (browser automation)")
+    print(f"   - MCP servers: {browser_name} (browser automation)")
     print()
 
     return ClaudeSDKClient(
@@ -103,11 +143,11 @@ def create_client(project_dir: Path, model: str) -> ClaudeSDKClient:
             system_prompt="You are an expert full-stack developer building a production-quality web application.",
             allowed_tools=[
                 *BUILTIN_TOOLS,
-                *PUPPETEER_TOOLS,
+                *browser_tools,
             ],
             setting_sources=["user", "project"],  # Load skills from ~/.claude and project
             mcp_servers={
-                "puppeteer": {"command": "npx", "args": ["puppeteer-mcp-server"]}
+                browser_name: browser_mcp_server
             },
             hooks={
                 "PreToolUse": [

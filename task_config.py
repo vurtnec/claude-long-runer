@@ -41,6 +41,7 @@ class TaskConfig:
     success_conditions: List[Dict[str, Any]]
     delay_seconds: int = 3
     state_processor: Optional[str] = None
+    browser_tool: str = "playwright"
 
     @classmethod
     def load(cls, task_dir: str) -> "TaskConfig":
@@ -108,6 +109,7 @@ class TaskConfig:
             success_conditions=config.get("success_conditions", []),
             delay_seconds=config.get("delay_seconds", 3),
             state_processor=config.get("state_processor"),
+            browser_tool=config.get("browser_tool", "playwright"),
         )
 
     def format_init_prompt(self, **variables) -> str:

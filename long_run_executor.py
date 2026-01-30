@@ -245,7 +245,7 @@ async def run_long_task(
         print()
 
         # Create client (fresh context for each iteration)
-        client = create_client(project_dir, model)
+        client = create_client(project_dir, model, task_config.browser_tool)
 
         # Choose prompt based on whether this is the first run
         if is_first_run:
