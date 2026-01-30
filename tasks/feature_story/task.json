@@ -4,6 +4,7 @@
   "state_file": "feature_story_state.json",
   "spec_file": "spec.yaml",
   "browser_tool": "playwright",
+  "allowed_commands": ["sqlite3"],
   "initial_state": {
     "spec_file": "spec.yaml",
     "phase": "initializing",

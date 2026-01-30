@@ -54,6 +54,7 @@ class TeeLogger:
         self.log_file.close()
 
 from client import create_client
+from security import set_task_allowed_commands
 from success_checker import SuccessChecker
 from state_manager import StateManager
 from task_config import TaskConfig
@@ -202,6 +203,12 @@ async def run_long_task(
 
         task_config = TaskConfig.load(str(task_dir))
         print(f"Loaded task: {task_config.description}")
+
+        # Set task-specific allowed commands
+        if task_config.allowed_commands:
+            set_task_allowed_commands(task_config.allowed_commands)
+            print(f"Extended command allowlist: {task_config.allowed_commands}")
+
         print()
     except Exception as e:
         print(f"Error loading task configuration: {e}")

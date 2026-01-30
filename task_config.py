@@ -10,7 +10,7 @@ Each task is defined by:
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -42,6 +42,7 @@ class TaskConfig:
     delay_seconds: int = 3
     state_processor: Optional[str] = None
     browser_tool: str = "playwright"
+    allowed_commands: List[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, task_dir: str) -> "TaskConfig":
@@ -110,6 +111,7 @@ class TaskConfig:
             delay_seconds=config.get("delay_seconds", 3),
             state_processor=config.get("state_processor"),
             browser_tool=config.get("browser_tool", "playwright"),
+            allowed_commands=config.get("allowed_commands", []),
         )
 
     def format_init_prompt(self, **variables) -> str:

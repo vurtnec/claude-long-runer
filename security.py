@@ -10,9 +10,9 @@ import os
 import shlex
 
 
-# Allowed commands for development tasks
-# Minimal set needed for the autonomous coding demo
-ALLOWED_COMMANDS = {
+# Base allowed commands for development tasks
+# These are always available for all tasks
+BASE_ALLOWED_COMMANDS = {
     # File inspection
     "ls",
     "cat",
@@ -48,7 +48,46 @@ ALLOWED_COMMANDS = {
     "pkill",  # For killing dev servers; validated separately
     # Script execution
     "init.sh",  # Init scripts; validated separately
+    "curl",
+    "kill",
+    "xargs",
+    # Common shell utilities
+    "true",
+    "false",
+    "test",
+    "[",
 }
+
+# Task-specific allowed commands (set at runtime)
+_task_allowed_commands: set[str] = set()
+
+
+def set_task_allowed_commands(commands: list[str]) -> None:
+    """
+    Set task-specific allowed commands.
+
+    These commands are merged with BASE_ALLOWED_COMMANDS to form
+    the complete allowlist for the current task.
+
+    Args:
+        commands: List of additional command names to allow
+    """
+    global _task_allowed_commands
+    _task_allowed_commands = set(commands)
+
+
+def get_allowed_commands() -> set[str]:
+    """
+    Get the complete set of allowed commands.
+
+    Returns:
+        Union of BASE_ALLOWED_COMMANDS and task-specific commands
+    """
+    return BASE_ALLOWED_COMMANDS | _task_allowed_commands
+
+
+# Backwards compatibility alias
+ALLOWED_COMMANDS = BASE_ALLOWED_COMMANDS
 
 # Commands that need additional validation even when in the allowlist
 COMMANDS_NEEDING_EXTRA_VALIDATION = {"pkill", "chmod", "init.sh"}
@@ -338,9 +377,10 @@ async def bash_security_hook(input_data, tool_use_id=None, context=None):
     # Split into segments for per-command validation
     segments = split_command_segments(command)
 
-    # Check each command against the allowlist
+    # Check each command against the allowlist (base + task-specific)
+    allowed = get_allowed_commands()
     for cmd in commands:
-        if cmd not in ALLOWED_COMMANDS:
+        if cmd not in allowed:
             return {
                 "decision": "block",
                 "reason": f"Command '{cmd}' is not in the allowed commands list",
