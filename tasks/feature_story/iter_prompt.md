@@ -1,23 +1,30 @@
-## Progress Check
+## Progress
 
-### Completed Features
-{completed_features}
-
-### Current Status
-Continue implementing and verifying features.
-
-### Verification Results
-{verification_results}
+### Completed Steps
+{completed_steps_display}
 
 ---
 
-## Next Steps
-1. Implement the next feature
-2. Run verification (code tests or browser check)
-3. If verification passes, mark feature complete
-4. Move to next feature
+## Current: Step {current_step} - {current_step_title}
 
-When all features are complete and verified, output:
-```
-ALL_FEATURES_COMPLETED_AND_VERIFIED
+### Tasks
+{current_step_tasks_display}
+
+### Acceptance Criteria
+{current_step_acceptance_display}
+
+---
+
+Continue implementing the current step.
+
+When done, output JSON:
+```json
+{
+  "action": "step_complete",
+  "step": {current_step},
+  "results": {
+    "tasks_completed": ["..."],
+    "acceptance_passed": true
+  }
+}
 ```

@@ -1,67 +1,60 @@
-# Feature Story: [Feature Name]
+# {project_name}
 
-## Overview
-[Brief description of the feature being implemented]
+{overview}
 
-## Feature List
-
-### Feature 1: [Name]
-**Description**: [What this feature does]
-**Acceptance Criteria**:
-- [ ] Criterion 1
-- [ ] Criterion 2
-
-### Feature 2: [Name]
-**Description**: [What this feature does]
-**Acceptance Criteria**:
-- [ ] Criterion 1
-- [ ] Criterion 2
-
-### Feature 3: [Name]
-**Description**: [What this feature does]
-**Acceptance Criteria**:
-- [ ] Criterion 1
-- [ ] Criterion 2
+## Technology Stack
+{technology_stack_display}
 
 ---
 
-## Verification Methods
-
-### Method A: Code Verification
-Run these commands to verify:
-```bash
-# Run tests
-npm test
-# or
-pytest
-
-# Type check
-npm run typecheck
-# or
-mypy .
-
-# Lint
-npm run lint
-# or
-ruff check .
-```
-
-### Method B: Browser Verification
-Use Playwright MCP tools:
-1. `mcp__playwright__browser_navigate` - Open the page
-2. `mcp__playwright__browser_snapshot` - Get accessibility snapshot
-3. `mcp__playwright__browser_click` - Interact with elements
-4. Verify expected behavior
+## Implementation Steps Overview
+{implementation_steps_display}
 
 ---
 
-## Completion Signal
-When ALL features are implemented and verified, output:
+## Current Step: Step {current_step} - {current_step_title}
+
+### Tasks
+{current_step_tasks_display}
+
+### Acceptance Criteria
+{current_step_acceptance_display}
+
+---
+
+## Instructions
+
+1. Implement all tasks for the current step
+2. Run acceptance tests:
+   - **Code verification**: Run the specified command
+   - **Browser verification**: Use Playwright MCP tools:
+     - `mcp__playwright__browser_navigate` - Open URL
+     - `mcp__playwright__browser_snapshot` - Get page snapshot
+     - `mcp__playwright__browser_click` - Click elements
+     - `mcp__playwright__browser_type` - Type text
+3. When all tasks are done and acceptance passes, output JSON:
+
+```json
+{
+  "action": "step_complete",
+  "step": {current_step},
+  "results": {
+    "tasks_completed": ["task1", "task2", "..."],
+    "acceptance_passed": true,
+    "notes": "Optional notes about implementation"
+  }
+}
 ```
-ALL_FEATURES_COMPLETED_AND_VERIFIED
+
+If acceptance fails, output:
+```json
+{
+  "action": "step_failed",
+  "step": {current_step},
+  "reason": "Description of what failed"
+}
 ```
 
 ---
 
-## Start Implementation
-Begin with Feature 1. Implement it fully, then verify using the appropriate method before moving to the next feature.
+Begin implementing Step {current_step} now.

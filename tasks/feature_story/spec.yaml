@@ -1,0 +1,68 @@
+# Project Specification Template
+# Replace this file with your actual project spec
+
+project_name: "Example Todo App"
+
+overview: |
+  Build a simple todo application with React frontend and Express backend.
+  This is a minimal example to demonstrate the feature_story template.
+
+technology_stack:
+  frontend:
+    framework: "React with Vite"
+    styling: "Tailwind CSS"
+    port: 5173
+  backend:
+    runtime: "Node.js with Express"
+    database: "SQLite with better-sqlite3"
+    port: 3000
+
+implementation_steps:
+  - step: 1
+    title: "Setup Backend Server"
+    tasks:
+      - "Initialize Express server"
+      - "Set up SQLite database"
+      - "Create todos table schema"
+      - "Add health check endpoint"
+    acceptance:
+      - type: code
+        command: "curl http://localhost:3000/health"
+        expected: "ok"
+
+  - step: 2
+    title: "Implement CRUD API"
+    tasks:
+      - "GET /api/todos - list all todos"
+      - "POST /api/todos - create todo"
+      - "PUT /api/todos/:id - update todo"
+      - "DELETE /api/todos/:id - delete todo"
+    acceptance:
+      - type: code
+        command: "npm test"
+
+  - step: 3
+    title: "Build Frontend UI"
+    tasks:
+      - "Create TodoList component"
+      - "Create TodoItem component"
+      - "Create AddTodo form"
+      - "Connect to backend API"
+    acceptance:
+      - type: browser
+        url: "http://localhost:5173"
+        steps:
+          - action: "verify"
+            text: "Todo App"
+          - action: "type"
+            selector: "input[name=todo]"
+            text: "Test todo item"
+          - action: "click"
+            selector: "button[type=submit]"
+          - action: "verify"
+            text: "Test todo item"
+
+success_criteria:
+  - "All CRUD operations work correctly"
+  - "Frontend displays todos from backend"
+  - "Can add, toggle, and delete todos"

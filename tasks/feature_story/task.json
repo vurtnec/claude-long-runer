@@ -1,19 +1,28 @@
 {
   "name": "feature_story",
-  "description": "Template for feature development with acceptance criteria",
+  "description": "Feature Story template - step-by-step implementation based on project specification",
   "state_file": "feature_story_state.json",
+  "spec_file": "spec.yaml",
   "initial_state": {
-    "phase": "implementing",
-    "features": [],
-    "current_feature_index": 0,
-    "completed_features": [],
-    "verification_results": []
+    "phase": "initializing",
+    "current_step": 1,
+    "total_steps": 0,
+    "completed_steps": [],
+    "failed_steps": [],
+    "current_step_title": "",
+    "current_step_tasks": [],
+    "current_step_acceptance": [],
+    "project_name": "",
+    "overview": "",
+    "technology_stack": {}
   },
   "success_conditions": [
     {
-      "type": "text_contains",
-      "text": "ALL_FEATURES_COMPLETED_AND_VERIFIED"
+      "type": "state_equals",
+      "key": "phase",
+      "value": "completed"
     }
   ],
-  "delay_seconds": 3
+  "delay_seconds": 3,
+  "state_processor": "processor.py"
 }
