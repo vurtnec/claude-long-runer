@@ -99,6 +99,7 @@ def _initialize_from_spec(state: Any) -> None:
         total_steps=len(implementation_steps),
         current_step=1,
         current_step_title=first_step.get("title", ""),
+        current_step_description=first_step.get("description", ""),
         current_step_tasks=first_step.get("tasks", []),
         current_step_acceptance=first_step.get("acceptance", []),
         completed_steps=[],
@@ -106,6 +107,7 @@ def _initialize_from_spec(state: Any) -> None:
         # Display formats
         technology_stack_display=_format_tech_stack(technology_stack),
         implementation_steps_display=_format_steps_overview(implementation_steps),
+        current_step_description_display=first_step.get("description", "").strip(),
         current_step_tasks_display=_format_tasks(first_step.get("tasks", [])),
         current_step_acceptance_display=_format_acceptance(first_step.get("acceptance", [])),
         completed_steps_display="(none yet)",
@@ -116,6 +118,17 @@ def _initialize_from_spec(state: Any) -> None:
 def _handle_step_complete(data: Dict[str, Any], state: Any) -> None:
     """Handle step_complete action."""
     step_num = data.get("step", state.get("current_step", 1))
+
+    # Validate that acceptance tests actually passed
+    results = data.get("results", {})
+    acceptance_passed = results.get("acceptance_passed", False)
+    if not acceptance_passed:
+        print(f"Step {step_num}: acceptance_passed is not true, treating as failed")
+        _handle_step_failed(
+            {"step": step_num, "reason": "Acceptance tests not passed"},
+            state,
+        )
+        return
 
     completed_steps = list(state.get("completed_steps", []))
     if step_num not in completed_steps:
@@ -141,9 +154,11 @@ def _handle_step_complete(data: Dict[str, Any], state: Any) -> None:
     state.update(
         current_step=next_step,
         current_step_title=next_step_data.get("title", ""),
+        current_step_description=next_step_data.get("description", ""),
         current_step_tasks=next_step_data.get("tasks", []),
         current_step_acceptance=next_step_data.get("acceptance", []),
         completed_steps=completed_steps,
+        current_step_description_display=next_step_data.get("description", "").strip(),
         current_step_tasks_display=_format_tasks(next_step_data.get("tasks", [])),
         current_step_acceptance_display=_format_acceptance(next_step_data.get("acceptance", [])),
         completed_steps_display=_format_completed_steps(completed_steps, implementation_steps),

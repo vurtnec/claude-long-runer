@@ -279,7 +279,7 @@ async def run_long_task(
         print()
 
         # Create client (fresh context for each iteration)
-        client = create_client(project_dir, model, task_config.browser_tool)
+        client = create_client(project_dir, model, task_config.browser_tool, task_config.system_prompt)
 
         # Choose prompt based on whether this is the first run
         if is_first_run:
@@ -341,6 +341,17 @@ async def run_long_task(
             else:
                 print("Max iterations reached. Stopping.")
                 break
+
+        # Check for blocked pipeline (step permanently failed)
+        if state.data.get("phase") == "blocked":
+            blocked_step = state.data.get("blocked_step", "?")
+            blocked_reason = state.data.get("blocked_reason", "Unknown")
+            print(f"\n🛑 PIPELINE BLOCKED at Step {blocked_step}")
+            print(f"   Reason: {blocked_reason}")
+            print(f"   After max retries + degraded attempt")
+            print(f"\n   Previous successful work saved via git checkpoint.")
+            print(f"   To resume after manual fix, edit the state file and set phase='implementing'")
+            break
 
         # Check success conditions
         print("\nChecking success conditions...")

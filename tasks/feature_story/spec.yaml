@@ -7,47 +7,59 @@ overview: |
   Build a simple todo application with React frontend and Express backend.
   This is a minimal example to demonstrate the feature_story template.
 
+  IMPORTANT: All commands should use absolute paths or run from project root.
+  Do NOT use 'cd' as it doesn't persist between Bash calls in sandbox mode.
+
 technology_stack:
   frontend:
     framework: "React with Vite"
     styling: "Tailwind CSS"
     port: 5173
+    package_manager: "pnpm"
   backend:
     runtime: "Node.js with Express"
     database: "SQLite with better-sqlite3"
     port: 3000
+    package_manager: "pnpm"
 
 implementation_steps:
   - step: 1
     title: "Setup Backend Server"
     tasks:
-      - "Initialize Express server"
-      - "Set up SQLite database"
-      - "Create todos table schema"
-      - "Add health check endpoint"
+      - "Create backend directory: mkdir -p backend"
+      - "Initialize with pnpm: pnpm init (run in backend folder using --dir flag)"
+      - "Install deps: pnpm add express better-sqlite3 cors --dir backend"
+      - "Create server.js with Express, SQLite, and CORS setup"
+      - "Create todos table schema in database"
+      - "Add health check endpoint GET /health"
+      - "Start server in background for testing"
     acceptance:
       - type: code
-        command: "curl http://localhost:3000/health"
+        command: "curl -s http://localhost:3000/health"
         expected: "ok"
 
   - step: 2
     title: "Implement CRUD API"
     tasks:
       - "GET /api/todos - list all todos"
-      - "POST /api/todos - create todo"
-      - "PUT /api/todos/:id - update todo"
+      - "POST /api/todos - create todo (body: {text: string})"
+      - "PUT /api/todos/:id - update todo (body: {text?, completed?})"
       - "DELETE /api/todos/:id - delete todo"
     acceptance:
       - type: code
-        command: "npm test"
+        command: "pnpm test --dir backend"
 
   - step: 3
     title: "Build Frontend UI"
     tasks:
+      - "Create frontend with: pnpm create vite frontend --template react"
+      - "Install deps: pnpm install --dir frontend"
+      - "Add Tailwind: pnpm add -D tailwindcss postcss autoprefixer --dir frontend"
       - "Create TodoList component"
       - "Create TodoItem component"
       - "Create AddTodo form"
-      - "Connect to backend API"
+      - "Connect to backend API with fetch"
+      - "Start dev server for testing"
     acceptance:
       - type: browser
         url: "http://localhost:5173"
@@ -55,12 +67,13 @@ implementation_steps:
           - action: "navigate"
           - action: "snapshot"
           - action: "verify"
-            text: "Todo App"
+            text: "Todo"
           - action: "type"
-            ref: "input[name=todo]"
+            ref: "input"
             text: "Test todo item"
           - action: "click"
             ref: "button[type=submit]"
+          - action: "snapshot"
           - action: "verify"
             text: "Test todo item"
 

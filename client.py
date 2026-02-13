@@ -72,7 +72,10 @@ BUILTIN_TOOLS = [
 ]
 
 
-def create_client(project_dir: Path, model: str, browser_tool: str = "playwright") -> ClaudeSDKClient:
+DEFAULT_SYSTEM_PROMPT = "You are an expert full-stack developer building a production-quality web application."
+
+
+def create_client(project_dir: Path, model: str, browser_tool: str = "playwright", system_prompt: str | None = None) -> ClaudeSDKClient:
     """
     Create a Claude Agent SDK client with multi-layered security.
 
@@ -103,7 +106,7 @@ def create_client(project_dir: Path, model: str, browser_tool: str = "playwright
     # Note: Using relative paths ("./**") restricts access to project directory
     # since cwd is set to project_dir
     security_settings = {
-        "sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True},
+        "sandbox": {"enabled": False},
         "permissions": {
             "defaultMode": "acceptEdits",  # Auto-approve edits within allowed directories
             "allow": [
@@ -130,8 +133,9 @@ def create_client(project_dir: Path, model: str, browser_tool: str = "playwright
     with open(settings_file, "w") as f:
         json.dump(security_settings, f, indent=2)
 
+    sandbox_enabled = security_settings["sandbox"]["enabled"]
     print(f"Created security settings at {settings_file}")
-    print("   - Sandbox enabled (OS-level bash isolation)")
+    print(f"   - Sandbox: {'enabled' if sandbox_enabled else 'disabled'}")
     print(f"   - Filesystem restricted to: {project_dir.resolve()}")
     print("   - Bash commands restricted to allowlist (see security.py)")
     print(f"   - MCP servers: {browser_name} (browser automation)")
@@ -140,7 +144,7 @@ def create_client(project_dir: Path, model: str, browser_tool: str = "playwright
     return ClaudeSDKClient(
         options=ClaudeAgentOptions(
             model=model,
-            system_prompt="You are an expert full-stack developer building a production-quality web application.",
+            system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
             allowed_tools=[
                 *BUILTIN_TOOLS,
                 *browser_tools,

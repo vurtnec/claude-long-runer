@@ -3,7 +3,7 @@ name: long-runner-acceptance-test
 description: |
   Runs acceptance tests for claude-long-runner feature_story tasks.
   Supports code verification (bash commands) and browser verification
-  (using configurable MCP browser tools like Playwright, Puppeteer, BrowserMCP, etc.).
+  (using MCP browser tools).
 
   Use this skill when:
   - You need to run acceptance tests for a feature_story step
@@ -21,56 +21,25 @@ description: |
 
 You are an acceptance test executor for claude-long-runner feature_story tasks.
 
-## Overview
+## What to do
 
-This skill runs acceptance tests defined in the current step's `acceptance` criteria. It supports two types of verification:
+Run each acceptance criterion defined in the current step. There are two types:
 
-1. **Code verification** (`type: code`) - Run bash commands and check exit codes
-2. **Browser verification** (`type: browser`) - Use MCP browser tools to interact with web pages
+### Code verification (`type: code`)
 
-## Step 1: Read Configuration
-
-First, read the task configuration to determine which browser tool to use:
-
-1. Read `task.json` in the task directory to get `browser_tool` setting
-2. Read the current step's acceptance criteria from the state file
-
-### Browser Tool Mapping
-
-| browser_tool | MCP Tool Prefix |
-|--------------|-----------------|
-| `playwright` (default) | `mcp__playwright__browser_` |
-| `puppeteer` | `mcp__puppeteer__puppeteer_` |
-| `browsermcp` | `mcp__browsermcp__browser_` |
-| `browser-tool` | `mcp__browser-tool__` |
-
-## Step 2: Execute Code Tests
-
-For each acceptance criterion with `type: code`:
+Run the command via Bash. Check exit code is 0. If `expected` is specified, check output contains that text.
 
 ```yaml
 - type: code
-  command: "npm test"
-  expected: "ok"  # optional
+  command: "curl -s http://localhost:3000/health"
+  expected: "ok"
 ```
 
-Execute the command using Bash tool and check:
-- Exit code is 0 (success)
-- If `expected` is specified, output contains the expected text
+### Browser verification (`type: browser`)
 
-Report result:
-```json
-{
-  "type": "code",
-  "command": "npm test",
-  "passed": true,
-  "output": "All tests passed"
-}
-```
+Read `task.json` in the task directory to check the `browser_tool` setting (default: `"playwright"`). Use the corresponding MCP tools (e.g. playwright or puppeteer) to navigate to the URL and execute each step.
 
-## Step 3: Execute Browser Tests
-
-For each acceptance criterion with `type: browser`:
+The `verify` action means: take a snapshot and confirm the page contains the specified text.
 
 ```yaml
 - type: browser
@@ -78,94 +47,34 @@ For each acceptance criterion with `type: browser`:
   steps:
     - action: "navigate"
     - action: "snapshot"
+    - action: "verify"
+      text: "Todo"
+    - action: "type"
+      ref: "input"
+      text: "Test todo item"
     - action: "click"
       ref: "button[type=submit]"
-    - action: "type"
-      ref: "input[name=email]"
-      text: "test@example.com"
     - action: "verify"
-      text: "Success"
+      text: "Test todo item"
 ```
 
-### Action Mapping
+## Rules
 
-Based on the `browser_tool` configuration, map actions to MCP tool calls:
+- Use browser MCP tools DIRECTLY. Do NOT delegate to sub-agents — they don't have MCP access.
+- Do NOT use curl as a substitute for browser verification.
+- If browser tools are unavailable, report failure — do not fake a pass.
 
-| Action | playwright | puppeteer | browsermcp |
-|--------|-----------|-----------|------------|
-| navigate | `mcp__playwright__browser_navigate` | `mcp__puppeteer__puppeteer_navigate` | `mcp__browsermcp__browser_navigate` |
-| snapshot | `mcp__playwright__browser_snapshot` | `mcp__puppeteer__puppeteer_screenshot` | `mcp__browsermcp__browser_snapshot` |
-| click | `mcp__playwright__browser_click` | `mcp__puppeteer__puppeteer_click` | `mcp__browsermcp__browser_click` |
-| type/fill | `mcp__playwright__browser_type` | `mcp__puppeteer__puppeteer_fill` | `mcp__browsermcp__browser_type` |
-| hover | `mcp__playwright__browser_hover` | `mcp__puppeteer__puppeteer_hover` | `mcp__browsermcp__browser_hover` |
-| select | `mcp__playwright__browser_select_option` | `mcp__puppeteer__puppeteer_select` | `mcp__browsermcp__browser_select_option` |
-| wait | `mcp__playwright__browser_wait_for` | - | `mcp__browsermcp__browser_wait` |
-| evaluate | `mcp__playwright__browser_evaluate` | `mcp__puppeteer__puppeteer_evaluate` | - |
+## Output
 
-### Verify Action
-
-The `verify` action is special - it checks that the page snapshot contains the expected text:
-
-1. Take a snapshot using the appropriate tool
-2. Check if the snapshot contains the specified `text`
-3. Report pass/fail based on presence of text
-
-## Step 4: Report Results
-
-After running all acceptance tests, output a JSON summary:
+Output a JSON summary:
 
 ```json
 {
   "acceptance_results": [
-    {
-      "type": "code",
-      "command": "npm test",
-      "passed": true,
-      "output": "All tests passed"
-    },
-    {
-      "type": "browser",
-      "url": "http://localhost:5173",
-      "passed": true,
-      "steps_completed": 4,
-      "notes": "All browser steps completed successfully"
-    }
+    {"type": "code", "command": "curl -s ...", "passed": true},
+    {"type": "browser", "url": "http://localhost:5173", "passed": true}
   ],
   "all_passed": true,
   "summary": "2/2 acceptance criteria passed"
 }
-```
-
-## Error Handling
-
-### Code Test Failures
-- Report the command, exit code, and error output
-- Continue with remaining tests
-
-### Browser Test Failures
-- Report which step failed and why
-- Take a screenshot if possible for debugging
-- Continue with remaining tests if the browser is still usable
-
-### Common Issues
-
-1. **Server not running**: If browser tests fail to connect, remind the user to start the dev server
-2. **Element not found**: If click/type fails, take a snapshot to help debug selectors
-3. **Timeout**: If actions take too long, report timeout and suggest increasing wait times
-
-## Usage in Prompts
-
-In `init_prompt.md` or `iter_prompt.md`, include:
-
-```markdown
-## Acceptance Testing
-
-After implementing all tasks, run acceptance tests:
-
-Use `/long-runner-acceptance-test` to verify your implementation.
-
-The skill will:
-1. Run code tests (commands)
-2. Run browser tests (if configured)
-3. Report pass/fail for each criterion
 ```

@@ -24,7 +24,10 @@ BASE_ALLOWED_COMMANDS = {
     "printf",
     # File operations (agent uses SDK tools for most file ops, but cp/mkdir needed occasionally)
     "cp",
+    "mv",
+    "rm",
     "mkdir",
+    "touch",
     "chmod",  # For making scripts executable; validated separately
     # Directory navigation
     "pwd",
@@ -56,6 +59,21 @@ BASE_ALLOWED_COMMANDS = {
     "false",
     "test",
     "[",
+    # Environment & path utilities
+    "which",
+    "export",
+    "env",
+    "readlink",
+    "basename",
+    "dirname",
+    # Text processing (agent sometimes uses these for batch operations)
+    "sed",
+    "awk",
+    "sort",
+    "uniq",
+    "tr",
+    "cut",
+    "tee",
 }
 
 # Task-specific allowed commands (set at runtime)
@@ -141,9 +159,10 @@ def extract_commands(command_string: str) -> list[str]:
     # shlex doesn't treat ; as a separator, so we need to pre-process
     import re
 
-    # Split on semicolons that aren't inside quotes (simple heuristic)
+    # Split on semicolons that aren't inside quotes and aren't escaped (\;)
     # This handles common cases like "echo hello; ls"
-    segments = re.split(r'(?<!["\'])\s*;\s*(?!["\'])', command_string)
+    # but preserves find -exec ... \; patterns
+    segments = re.split(r'(?<!\\)(?<!["\'])\s*;\s*(?!["\'])', command_string)
 
     for segment in segments:
         segment = segment.strip()
@@ -162,8 +181,16 @@ def extract_commands(command_string: str) -> list[str]:
 
         # Track when we expect a command vs arguments
         expect_command = True
+        # Track find -exec ... \; blocks — everything between -exec and \;/+ is find's args
+        in_find_exec = False
 
         for token in tokens:
+            # Handle find -exec block: skip tokens until terminator
+            if in_find_exec:
+                if token in (";", "\\;", "+"):
+                    in_find_exec = False
+                continue
+
             # Shell operators indicate a new command follows
             if token in ("|", "||", "&&", "&"):
                 expect_command = True
@@ -190,8 +217,10 @@ def extract_commands(command_string: str) -> list[str]:
             ):
                 continue
 
-            # Skip flags/options
+            # Skip flags/options (but detect -exec for find)
             if token.startswith("-"):
+                if token in ("-exec", "-execdir"):
+                    in_find_exec = True
                 continue
 
             # Skip variable assignments (VAR=value)

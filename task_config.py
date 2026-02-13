@@ -43,6 +43,7 @@ class TaskConfig:
     state_processor: Optional[str] = None
     browser_tool: str = "playwright"
     allowed_commands: List[str] = field(default_factory=list)
+    system_prompt: Optional[str] = None
 
     @classmethod
     def load(cls, task_dir: str) -> "TaskConfig":
@@ -112,6 +113,7 @@ class TaskConfig:
             state_processor=config.get("state_processor"),
             browser_tool=config.get("browser_tool", "playwright"),
             allowed_commands=config.get("allowed_commands", []),
+            system_prompt=config.get("system_prompt"),
         )
 
     def format_init_prompt(self, **variables) -> str:
