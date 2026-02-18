@@ -69,19 +69,35 @@ BUILTIN_TOOLS = [
     "Grep",
     "Bash",
     "Skill",  # Enable skill invocation
+    "WebSearch",
+    "WebFetch",
+    "Task",   # Enable sub-agent spawning
 ]
 
 
 DEFAULT_SYSTEM_PROMPT = "You are an expert full-stack developer building a production-quality web application."
 
 
-def create_client(project_dir: Path, model: str, browser_tool: str = "playwright", system_prompt: str | None = None) -> ClaudeSDKClient:
+def create_client(
+    project_dir: Path,
+    model: str,
+    browser_tool: str = "playwright",
+    system_prompt: str | None = None,
+    max_turns: int = 1000,
+    permission_mode: str | None = None,
+    resume: str | None = None,
+) -> ClaudeSDKClient:
     """
     Create a Claude Agent SDK client with multi-layered security.
 
     Args:
         project_dir: Directory for the project
         model: Claude model to use
+        browser_tool: Browser automation tool to use
+        system_prompt: Custom system prompt
+        max_turns: Maximum conversation turns
+        permission_mode: Permission mode ('default', 'acceptEdits', 'plan', 'bypassPermissions')
+        resume: Session ID to resume a previous conversation
 
     Returns:
         Configured ClaudeSDKClient
@@ -141,25 +157,33 @@ def create_client(project_dir: Path, model: str, browser_tool: str = "playwright
     print(f"   - MCP servers: {browser_name} (browser automation)")
     print()
 
-    return ClaudeSDKClient(
-        options=ClaudeAgentOptions(
-            model=model,
-            system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
-            allowed_tools=[
-                *BUILTIN_TOOLS,
-                *browser_tools,
+    # Build options dict, only include optional params when set
+    options_kwargs = dict(
+        model=model,
+        system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
+        allowed_tools=[
+            *BUILTIN_TOOLS,
+            *browser_tools,
+        ],
+        setting_sources=["user", "project"],  # Load skills from ~/.claude and project
+        mcp_servers={
+            browser_name: browser_mcp_server
+        },
+        hooks={
+            "PreToolUse": [
+                HookMatcher(matcher="Bash", hooks=[bash_security_hook]),
             ],
-            setting_sources=["user", "project"],  # Load skills from ~/.claude and project
-            mcp_servers={
-                browser_name: browser_mcp_server
-            },
-            hooks={
-                "PreToolUse": [
-                    HookMatcher(matcher="Bash", hooks=[bash_security_hook]),
-                ],
-            },
-            max_turns=1000,
-            cwd=str(project_dir.resolve()),
-            settings=str(settings_file.resolve()),  # Use absolute path
-        )
+        },
+        max_turns=max_turns,
+        cwd=str(project_dir.resolve()),
+        settings=str(settings_file.resolve()),  # Use absolute path
+    )
+
+    if permission_mode:
+        options_kwargs["permission_mode"] = permission_mode
+    if resume:
+        options_kwargs["resume"] = resume
+
+    return ClaudeSDKClient(
+        options=ClaudeAgentOptions(**options_kwargs)
     )

@@ -1,0 +1,35 @@
+Collecting lark-oapi
+  Downloading lark_oapi-1.5.3-py3-none-any.whl.metadata (3.7 kB)
+Collecting requests (from lark-oapi)
+  Using cached requests-2.32.5-py3-none-any.whl.metadata (4.9 kB)
+Collecting requests-toolbelt (from lark-oapi)
+  Using cached requests_toolbelt-1.0.0-py2.py3-none-any.whl.metadata (14 kB)
+Collecting pycryptodome (from lark-oapi)
+  Downloading pycryptodome-3.23.0-cp37-abi3-macosx_10_9_universal2.whl.metadata (3.4 kB)
+Collecting websockets (from lark-oapi)
+  Downloading websockets-16.0-cp313-cp313-macosx_11_0_arm64.whl.metadata (6.8 kB)
+Requirement already satisfied: httpx in ./.venv/lib/python3.13/site-packages (from lark-oapi) (0.28.1)
+Requirement already satisfied: anyio in ./.venv/lib/python3.13/site-packages (from httpx->lark-oapi) (4.12.1)
+Requirement already satisfied: certifi in ./.venv/lib/python3.13/site-packages (from httpx->lark-oapi) (2026.1.4)
+Requirement already satisfied: httpcore==1.* in ./.venv/lib/python3.13/site-packages (from httpx->lark-oapi) (1.0.9)
+Requirement already satisfied: idna in ./.venv/lib/python3.13/site-packages (from httpx->lark-oapi) (3.11)
+Requirement already satisfied: h11>=0.16 in ./.venv/lib/python3.13/site-packages (from httpcore==1.*->httpx->lark-oapi) (0.16.0)
+Collecting charset_normalizer<4,>=2 (from requests->lark-oapi)
+  Downloading charset_normalizer-3.4.4-cp313-cp313-macosx_10_13_universal2.whl.metadata (37 kB)
+Collecting urllib3<3,>=1.21.1 (from requests->lark-oapi)
+  Using cached urllib3-2.6.3-py3-none-any.whl.metadata (6.9 kB)
+Downloading lark_oapi-1.5.3-py3-none-any.whl (7.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.0/7.0 MB 104.7 kB/s eta 0:00:00
+Downloading pycryptodome-3.23.0-cp37-abi3-macosx_10_9_universal2.whl (2.5 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.5/2.5 MB 109.9 kB/s eta 0:00:00
+Using cached requests-2.32.5-py3-none-any.whl (64 kB)
+Downloading charset_normalizer-3.4.4-cp313-cp313-macosx_10_13_universal2.whl (208 kB)
+Using cached urllib3-2.6.3-py3-none-any.whl (131 kB)
+Using cached requests_toolbelt-1.0.0-py2.py3-none-any.whl (54 kB)
+Downloading websockets-16.0-cp313-cp313-macosx_11_0_arm64.whl (175 kB)
+Installing collected packages: websockets, urllib3, pycryptodome, charset_normalizer, requests, requests-toolbelt, lark-oapi
+
+Successfully installed charset_normalizer-3.4.4 lark-oapi-1.5.3 pycryptodome-3.23.0 requests-2.32.5 requests-toolbelt-1.0.0 urllib3-2.6.3 websockets-16.0
+
+[notice] A new release of pip is available: 25.1.1 -> 26.0.1
+[notice] To update, run: /path/to/claude-long-runner/.venv/bin/python3.13 -m pip install --upgrade pip

@@ -11,10 +11,17 @@ __pycache__/
 dist/
 build/
 
+# Environment variables
+.env
+.env.*
+!.env.example
+
 # State files (generated during execution)
 *_state.json
+scheduler_history.json
 progress.txt
 claude-progress.txt
+.claude_settings.json
 
 # Logs
 *.log
@@ -39,5 +46,9 @@ htmlcov/
 tasks/*
 !tasks/repetitive_work/
 !tasks/feature_story/
+
+# Schedules - only track examples, ignore personal schedules
+schedules/*
+!schedules/_examples/
 
 temp

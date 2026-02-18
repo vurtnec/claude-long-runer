@@ -1,0 +1,15 @@
+Collecting croniter
+  Downloading croniter-6.0.0-py2.py3-none-any.whl.metadata (32 kB)
+Collecting python-dateutil (from croniter)
+  Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+Collecting pytz>2021.1 (from croniter)
+  Using cached pytz-2025.2-py2.py3-none-any.whl.metadata (22 kB)
+Collecting six>=1.5 (from python-dateutil->croniter)
+  Using cached six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)
+Downloading croniter-6.0.0-py2.py3-none-any.whl (25 kB)
+Using cached pytz-2025.2-py2.py3-none-any.whl (509 kB)
+Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+Using cached six-1.17.0-py2.py3-none-any.whl (11 kB)
+Installing collected packages: pytz, six, python-dateutil, croniter
+
+Successfully installed croniter-6.0.0 python-dateutil-2.9.0.post0 pytz-2025.2 six-1.17.0

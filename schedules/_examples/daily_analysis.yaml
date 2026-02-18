@@ -1,0 +1,47 @@
+# 示例：每日定时分析任务 + 微信推送
+# =====================================
+# 每天早上8点自动运行分析任务，完成后推送到微信。
+# 使用前请将此文件复制到 schedules/ 目录并修改配置。
+
+name: daily_analysis
+description: "每天早上8点运行数据分析"
+enabled: true
+
+trigger:
+  type: cron
+  cron: "0 8 * * *"              # 每天早上8:00
+  timezone: "Asia/Shanghai"
+
+task:
+  name: data_analysis             # 对应 tasks/data_analysis/ 目录
+  params:
+    report_type: "daily"
+    date: "{{today}}"
+  project_dir: "/path/to/your/project"
+  model: "claude-sonnet-4-5-20250929"
+  max_iterations: 10
+
+timeout_minutes: 90
+
+notifications:
+  on_success:
+    - type: wechat
+      channel: serverchan
+      title: "分析完成 - {{date}}"
+      body: |
+        任务: {{task_name}}
+        耗时: {{duration}}
+        迭代次数: {{iterations}}
+
+        结果摘要:
+        {{last_response}}
+
+  on_failure:
+    - type: wechat
+      channel: serverchan
+      title: "任务失败: {{task_name}}"
+      body: "任务在 {{iterations}} 次迭代后失败。错误: {{error}}"
+
+retry:
+  max_retries: 1
+  retry_delay_minutes: 5

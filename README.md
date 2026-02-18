@@ -212,6 +212,182 @@ claude-long-runner/
         └── spec.yaml     # Project specification
 ```
 
+## Scheduler
+
+A cron-based daemon that triggers tasks on schedule and sends notifications.
+
+### Running the Daemon
+
+```bash
+# Start the scheduler (runs in foreground)
+python -m scheduler.daemon
+
+# Run a single poll cycle and exit (for testing)
+python -m scheduler.daemon --once
+
+# Immediately run a specific schedule
+python -m scheduler.daemon --run daily_stock_news
+```
+
+### Schedule Definition
+
+Create YAML files in `schedules/` directory:
+
+```yaml
+name: my_schedule
+description: "What this schedule does"
+enabled: true
+
+trigger:
+  type: cron
+  cron: "0 8 * * *"           # Standard cron expression
+  timezone: "Asia/Shanghai"
+
+task:
+  type: inline                 # "inline" (prompt) or "standard" (task dir)
+  prompt: |
+    Your prompt here. Supports {{today}} and {{now}} templates.
+  model: "claude-opus-4-6"
+  max_turns: 10
+  project_dir: "/path/to/project"
+
+notifications:
+  on_success:
+    - type: feishu             # feishu, wechat, dingtalk, email, webhook
+      title: "Task Done - {{today}}"
+      body: "{{last_response}}"
+  on_failure:
+    - type: feishu
+      title: "Task Failed"
+      body: "Error: {{error}}"
+```
+
+### Notification Channels
+
+| Channel | Config Keys |
+|---------|-------------|
+| Feishu (webhook) | `FEISHU_WEBHOOK_URL` |
+| WeChat (ServerChan) | `SERVERCHAN_KEY` |
+| WeChat (WxPusher) | `WXPUSHER_TOKEN`, `WXPUSHER_UID` |
+| DingTalk | `DINGTALK_WEBHOOK_URL` |
+| Email | `SMTP_USER`, `SMTP_PASSWORD` |
+
+## Feishu Bot
+
+An interactive Feishu bot that provides multi-turn Claude conversations in group chats.
+
+### Features
+
+- Per-chat persistent sessions with full conversation context
+- Multi-project support with `/project` switching
+- Permission mode control (`/mode plan|auto|default`)
+- Session history with `/resume` to restore previous conversations
+- Direct execution of predefined schedules via `/run`
+
+### Setup
+
+1. Create an enterprise app at [open.feishu.cn](https://open.feishu.cn)
+2. Enable bot capability, add `im:message` permission
+3. Subscribe to `im.message.receive_v1` event with **WebSocket** mode
+4. Publish a version and add the bot to a group chat
+5. Set `FEISHU_APP_ID` and `FEISHU_APP_SECRET` environment variables
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available commands |
+| `/project [alias]` | Show current project / switch project |
+| `/mode [plan\|auto\|default]` | Show or switch permission mode |
+| `/resume [number]` | List recent sessions / resume by number |
+| `/list` | List available schedules |
+| `/run <name>` | Run a predefined schedule |
+| `/new` | Reset conversation (start fresh) |
+| `/stop` | Stop and disconnect current session |
+
+Or just send a message to chat with Claude directly.
+
+### Running Standalone
+
+```bash
+python -m scheduler.feishu_bot
+```
+
+The bot also starts automatically alongside the daemon when `feishu_bot.enabled: true` in config.
+
+## Configuration
+
+### scheduler_config.yaml
+
+```yaml
+daemon:
+  poll_interval_seconds: 30
+  schedules_dir: "schedules"
+
+notifications:
+  feishu:
+    webhook_url: "{{env.FEISHU_WEBHOOK_URL}}"
+    app_id: "{{env.FEISHU_APP_ID}}"
+    app_secret: "{{env.FEISHU_APP_SECRET}}"
+  wechat:
+    serverchan_key: "{{env.SERVERCHAN_KEY}}"
+  # ... see scheduler_config.yaml for all options
+
+defaults:
+  model: "claude-opus-4-6"
+  max_iterations: 10
+  timeout_minutes: 120
+
+feishu_bot:
+  enabled: true
+  model: "claude-opus-4-6"
+  max_turns: 5
+  projects:
+    my_project: "/path/to/project"
+  default_project: "my_project"
+```
+
+### Environment Variables
+
+All credentials use `{{env.VAR_NAME}}` templates in the config file. Set them via:
+
+```bash
+# Copy the example file and fill in your values
+cp .env.example .env
+# Edit .env, then load it
+source .env
+```
+
+See [.env.example](.env.example) for all supported variables.
+
+## Architecture
+
+```
+claude-long-runner/
+├── long_run_executor.py  # Main orchestrator
+├── agent.py              # Session executor
+├── client.py             # Claude SDK wrapper
+├── task_config.py        # Config loader
+├── state_manager.py      # State persistence
+├── success_checker.py    # Condition checker
+├── security.py           # Command validation
+├── scheduler_config.yaml # Global configuration
+├── scheduler/            # Scheduler & bot
+│   ├── daemon.py         # Cron daemon
+│   ├── feishu_bot.py     # Feishu bot server
+│   ├── inline_executor.py
+│   ├── schedule_loader.py
+│   ├── trigger_engine.py
+│   ├── models.py
+│   └── notifiers/        # Notification channels
+├── schedules/            # Schedule YAML files
+├── skills/               # Claude Code skills
+│   └── long-runner-acceptance-test/
+└── tasks/
+    ├── repetitive_work/  # Batch processing template
+    └── feature_story/    # Feature development template
+```
+
 ## Credits
 
 Based on Anthropic's [autonomous-coding](https://github.com/anthropics/claude-quickstarts/tree/main/autonomous-coding) quickstart.

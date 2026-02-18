@@ -1,0 +1,44 @@
+# 示例：PR 监控（组合触发器）
+# ==============================
+# 工作时间内每30分钟检查是否有新 PR，有则自动 review。
+# 使用前请将此文件复制到 schedules/ 目录并修改配置。
+
+name: pr_review_auto
+description: "工作时间内每30分钟检查新PR并自动review"
+enabled: true
+
+trigger:
+  type: composite
+  operator: and
+  triggers:
+    - type: cron
+      cron: "*/30 9-18 * * 1-5"  # 工作日 9:00-18:00 每30分钟
+    - type: http_condition
+      url: "https://api.github.com/repos/OWNER/REPO/pulls?state=open"
+      headers:
+        Authorization: "token {{env.GITHUB_TOKEN}}"
+      condition:
+        jq_expression: "length > 0"
+
+task:
+  name: pr_review
+  params:
+    pr_number: "{{trigger.http_response[0].number}}"
+  project_dir: "/path/to/repo"
+  model: "claude-sonnet-4-5-20250929"
+  max_iterations: 5
+
+notifications:
+  on_success:
+    - type: wechat
+      channel: serverchan
+      title: "PR Review 完成"
+      body: "PR review 已完成，耗时 {{duration}}"
+
+    - type: webhook
+      url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+      body: '{"text": "PR review completed in {{duration}}"}'
+
+concurrency:
+  max_concurrent: 1
+  overlap_policy: skip

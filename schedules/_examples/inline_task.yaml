@@ -1,0 +1,32 @@
+# 示例：内联 Prompt 任务（不需要 task 目录）
+# =============================================
+# 直接在 YAML 中写 prompt，适合轻量级定时任务。
+# 使用前请将此文件复制到 schedules/ 目录并修改配置。
+
+name: morning_briefing
+description: "每个工作日早上7:30生成简报"
+enabled: true
+
+trigger:
+  type: cron
+  cron: "30 7 * * 1-5"           # 工作日早上7:30
+  timezone: "Asia/Shanghai"
+
+task:
+  type: inline
+  prompt: |
+    请帮我总结以下信息:
+    1. 今天是 {{today}}
+    2. 请分析今日市场预期走势要点
+    3. 总结最近的科技新闻要点
+    请用中文回复，保持简洁。
+  model: "claude-sonnet-4-5-20250929"
+  max_turns: 3
+  project_dir: "."
+
+notifications:
+  on_success:
+    - type: wechat
+      channel: serverchan
+      title: "早报 - {{today}}"
+      body: "{{last_response}}"
