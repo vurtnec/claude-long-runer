@@ -70,6 +70,9 @@ MODE_DISPLAY = {v: k for k, v in MODE_ALIASES.items()}
 SESSION_HISTORY_FILE = Path.home() / ".claude-long-runner" / "feishu_sessions.json"
 SESSION_HISTORY_MAX_PER_CHAT = 10
 
+# Claude Code CLI sessions directory
+CLAUDE_SESSIONS_DIR = Path.home() / ".claude" / "projects"
+
 
 class ChatSession:
     """
@@ -848,6 +851,7 @@ class FeishuBotServer:
                 "project_dir": str(session.project_dir),
                 "created_at": session.created_at.isoformat(),
                 "last_active": session.last_active.isoformat(),
+                "source": "bot",
             }
             chat_history.insert(0, entry)  # newest first
         else:
@@ -867,18 +871,105 @@ class FeishuBotServer:
         history = self._load_session_history()
         return history.get(chat_id, [])
 
+    def _scan_cli_sessions(self, project_dir: Path, exclude_ids: set | None = None) -> list:
+        """
+        Scan Claude Code CLI session files for a given project.
+
+        CLI sessions are stored at ~/.claude/projects/{encoded_dir}/*.jsonl
+        where encoded_dir = project path with '/' replaced by '-'.
+        """
+        encoded_dir = str(project_dir.resolve()).replace("/", "-")
+        sessions_path = CLAUDE_SESSIONS_DIR / encoded_dir
+        if not sessions_path.is_dir():
+            return []
+
+        exclude_ids = exclude_ids or set()
+        results = []
+
+        for jsonl_file in sessions_path.glob("*.jsonl"):
+            session_id = jsonl_file.stem
+            if session_id in exclude_ids:
+                continue
+
+            # Get modification time as last_active
+            mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime)
+
+            # Read first user message for summary
+            summary = ""
+            try:
+                with open(jsonl_file) as f:
+                    for line in f:
+                        obj = json.loads(line)
+                        if obj.get("type") == "user":
+                            content = obj.get("message", {}).get("content", [])
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    text = block["text"].strip()
+                                    # Skip system tags
+                                    if not text.startswith("<"):
+                                        summary = text[:30]
+                                        break
+                            break
+            except (json.JSONDecodeError, IOError, KeyError, AttributeError, TypeError):
+                pass
+
+            if not summary:
+                summary = "(no message)"
+
+            project_alias = self._get_project_alias(project_dir)
+            results.append({
+                "session_id": session_id,
+                "summary": summary,
+                "permission_mode": "default",
+                "project_alias": project_alias,
+                "project_dir": str(project_dir),
+                "created_at": mtime.isoformat(),
+                "last_active": mtime.isoformat(),
+                "source": "cli",
+            })
+
+        # Sort by last_active descending
+        results.sort(key=lambda x: x["last_active"], reverse=True)
+        return results
+
+    def _get_merged_sessions(self, chat_id: str) -> list:
+        """Get merged session list: bot sessions (current project) + CLI sessions, deduped and sorted."""
+        current_project_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
+        current_project_str = str(current_project_dir.resolve())
+
+        # 1. Get bot sessions filtered by current project
+        all_bot_sessions = self._get_chat_history(chat_id)
+        bot_sessions = [
+            {**entry, "source": entry.get("source", "bot")}
+            for entry in all_bot_sessions
+            if str(Path(entry.get("project_dir", "")).resolve()) == current_project_str
+        ]
+        bot_session_ids = {e["session_id"] for e in bot_sessions}
+
+        # 2. Get CLI sessions, excluding those already in bot history
+        cli_sessions = self._scan_cli_sessions(current_project_dir, exclude_ids=bot_session_ids)
+
+        # 3. Merge and sort by last_active descending
+        merged = bot_sessions + cli_sessions
+        merged.sort(key=lambda x: x.get("last_active", ""), reverse=True)
+        return merged[:10]
+
     def _handle_resume(self, arg: str | None, chat_id: str, message_id: str):
         """Handle /resume command: list history or resume a session."""
-        chat_history = self._get_chat_history(chat_id)
+        merged = self._get_merged_sessions(chat_id)
 
-        if not chat_history:
-            self._reply_text(message_id, "No previous sessions found for this chat.")
+        if not merged:
+            project_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
+            alias = self._get_project_alias(project_dir) or str(project_dir)
+            self._reply_text(message_id, f"No sessions found for project: {alias}")
             return
 
         if arg is None:
-            # List recent sessions (across all projects)
-            lines = ["Recent sessions:\n"]
-            for i, entry in enumerate(chat_history[:5], 1):
+            # List recent sessions for current project
+            project_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
+            alias = self._get_project_alias(project_dir) or str(project_dir)
+            lines = [f"Sessions for {alias}:\n"]
+            for i, entry in enumerate(merged, 1):
                 last_active = entry.get("last_active", "")
                 try:
                     dt = datetime.fromisoformat(last_active)
@@ -886,9 +977,9 @@ class FeishuBotServer:
                 except (ValueError, TypeError):
                     time_str = "?"
                 summary = entry.get("summary", "?")
-                project_alias = entry.get("project_alias") or "?"
-                mode = MODE_DISPLAY.get(entry.get("permission_mode", ""), entry.get("permission_mode", "?"))
-                lines.append(f'{i}. [{time_str}] "{summary}" ({project_alias} | {mode})')
+                source = entry.get("source", "bot")
+                source_tag = "cli" if source == "cli" else "bot"
+                lines.append(f'{i}. [{time_str}] "{summary}" [{source_tag}]')
             lines.append("\nUsage: /resume <number>")
             self._reply_text(message_id, "\n".join(lines))
             return
@@ -900,11 +991,11 @@ class FeishuBotServer:
             self._reply_text(message_id, "Usage: /resume <number>\nExample: /resume 1")
             return
 
-        if idx < 0 or idx >= len(chat_history):
-            self._reply_text(message_id, f"Invalid number. Choose between 1 and {len(chat_history)}.")
+        if idx < 0 or idx >= len(merged):
+            self._reply_text(message_id, f"Invalid number. Choose between 1 and {len(merged)}.")
             return
 
-        entry = chat_history[idx]
+        entry = merged[idx]
         session_id = entry.get("session_id")
         project_dir_str = entry.get("project_dir")
         project_alias = entry.get("project_alias")
