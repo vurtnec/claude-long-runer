@@ -77,6 +77,26 @@ BUILTIN_TOOLS = [
 
 DEFAULT_SYSTEM_PROMPT = "You are an expert full-stack developer building a production-quality web application."
 
+# Claude Code CLI config file (stores per-project MCP server settings)
+CLAUDE_CONFIG_FILE = Path.home() / ".claude.json"
+
+
+def _load_project_mcp_servers(project_dir: Path) -> dict:
+    """Load MCP servers from ~/.claude.json (global + project-level, merged)."""
+    if not CLAUDE_CONFIG_FILE.is_file():
+        return {}
+    try:
+        with open(CLAUDE_CONFIG_FILE) as f:
+            config = json.load(f)
+        # Global MCP servers apply to all projects
+        global_servers = config.get("mcpServers", {})
+        # Project-specific MCP servers (override global if same name)
+        project_key = str(project_dir.resolve())
+        project_servers = config.get("projects", {}).get(project_key, {}).get("mcpServers", {})
+        return {**global_servers, **project_servers}
+    except (json.JSONDecodeError, IOError):
+        return {}
+
 
 def create_client(
     project_dir: Path,
@@ -118,6 +138,10 @@ def create_client(
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     # Note: If api_key is None, SDK will attempt to use Claude Code CLI authentication
 
+    # Load project-level MCP servers from ~/.claude.json
+    project_mcp_servers = _load_project_mcp_servers(project_dir)
+    project_mcp_tool_wildcards = [f"mcp__{name}__*" for name in project_mcp_servers]
+
     # Create comprehensive security settings
     # Note: Using relative paths ("./**") restricts access to project directory
     # since cwd is set to project_dir
@@ -137,6 +161,8 @@ def create_client(
                 "Bash(*)",
                 # Allow browser MCP tools for browser automation
                 *browser_tools,
+                # Allow project-level MCP tools
+                *project_mcp_tool_wildcards,
             ],
         },
     }
@@ -154,7 +180,8 @@ def create_client(
     print(f"   - Sandbox: {'enabled' if sandbox_enabled else 'disabled'}")
     print(f"   - Filesystem restricted to: {project_dir.resolve()}")
     print("   - Bash commands restricted to allowlist (see security.py)")
-    print(f"   - MCP servers: {browser_name} (browser automation)")
+    mcp_names = [browser_name] + list(project_mcp_servers.keys())
+    print(f"   - MCP servers: {', '.join(mcp_names)}")
     print()
 
     # Build options dict, only include optional params when set
@@ -164,10 +191,12 @@ def create_client(
         allowed_tools=[
             *BUILTIN_TOOLS,
             *browser_tools,
+            *project_mcp_tool_wildcards,
         ],
         setting_sources=["user", "project"],  # Load skills from ~/.claude and project
         mcp_servers={
-            browser_name: browser_mcp_server
+            browser_name: browser_mcp_server,
+            **project_mcp_servers,
         },
         hooks={
             "PreToolUse": [

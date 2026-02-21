@@ -43,6 +43,15 @@ BASE_ALLOWED_COMMANDS = {
     # Version control
     "git",
     "gh",  # GitHub CLI for PR operations
+    # iOS / Xcode development
+    "xcodebuild",
+    "xcode-select",
+    "swift",
+    "swiftc",
+    "xcrun",
+    "pod",
+    "xcpretty",
+    "simctl",
     # Process management
     "ps",
     "lsof",

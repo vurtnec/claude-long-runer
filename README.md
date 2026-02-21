@@ -219,6 +219,8 @@ A cron-based daemon that triggers tasks on schedule and sends notifications.
 ### Running the Daemon
 
 ```bash
+source .venv/bin/activate
+
 # Start the scheduler (runs in foreground)
 python -m scheduler.daemon
 
@@ -314,6 +316,44 @@ python -m scheduler.feishu_bot
 ```
 
 The bot also starts automatically alongside the daemon when `feishu_bot.enabled: true` in config.
+
+## MCP Servers
+
+MCP (Model Context Protocol) servers are automatically loaded from `~/.claude.json` — the same config file used by Claude Code CLI. No extra setup is needed; if a tool works in Claude Code CLI, it works here too.
+
+### How It Works
+
+- **Global MCP servers** (`mcpServers` at root level) are available to all projects
+- **Project-level MCP servers** (`projects.<path>.mcpServers`) are only available when that project is active
+- Project-level configs override global ones if the same server name exists
+- Browser MCP tools (Playwright, etc.) are always included via `task.json` config
+
+### Example `~/.claude.json`
+
+```json
+{
+  "mcpServers": {
+    "amap-maps": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/amap-maps-mcp-server"]
+    }
+  },
+  "projects": {
+    "/Users/you/project-a": {
+      "mcpServers": {
+        "xiaohongshu-mcp": {
+          "type": "http",
+          "url": "http://localhost:18060/mcp"
+        }
+      }
+    }
+  }
+}
+```
+
+In this example:
+- `amap-maps` is available in **all** projects
+- `xiaohongshu-mcp` is only available when working in `/Users/you/project-a`
 
 ## Configuration
 
