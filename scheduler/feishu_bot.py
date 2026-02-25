@@ -250,6 +250,23 @@ class FeishuBotServer:
             new_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(new_loop)
             ws_module.loop = new_loop  # Patch the module-level loop
+
+            # macOS system proxy (127.0.0.1:7890) causes SSL handshake
+            # failures (BAD_RECORD_MAC) when both requests and websockets
+            # route through the HTTP CONNECT tunnel.  Setting no_proxy=*
+            # makes all Python HTTP libraries (requests, websockets, urllib)
+            # bypass the proxy.  This only affects Python code in this process;
+            # curl subprocesses used by notifiers are unaffected.
+            import os
+            os.environ.setdefault("no_proxy", "*")
+
+            # Also patch the SDK's requests reference to a no-proxy session
+            # in case the env var is read too late by urllib.
+            import requests as _req
+            _no_proxy_session = _req.Session()
+            _no_proxy_session.trust_env = False
+            ws_module.requests = _no_proxy_session
+
             ws_client.start()
 
         thread = threading.Thread(target=_run_ws, daemon=True)

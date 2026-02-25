@@ -10,8 +10,8 @@ Supports two free services:
   Free, unlimited. Register to get appToken and UID.
 """
 
+import asyncio
 import json
-import subprocess
 from typing import Any, Dict
 
 from .base import BaseNotifier
@@ -58,8 +58,20 @@ class WeChatNotifier(BaseNotifier):
         ]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            response = result.stdout.strip()
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                print("  ServerChan: request timed out")
+                return False
+
+            response = stdout.decode().strip()
 
             # Check for success
             try:
@@ -118,8 +130,20 @@ class WeChatNotifier(BaseNotifier):
         ]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            response = result.stdout.strip()
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                print("  WxPusher: request timed out")
+                return False
+
+            response = stdout.decode().strip()
 
             try:
                 resp_json = json.loads(response)

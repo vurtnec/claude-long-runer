@@ -13,8 +13,8 @@ DingTalk (钉钉) Push Notification
 文档：https://open.dingtalk.com/document/orgapp/custom-robot-access
 """
 
+import asyncio
 import json
-import subprocess
 from typing import Any, Dict
 
 from .base import BaseNotifier
@@ -48,8 +48,20 @@ class DingTalkNotifier(BaseNotifier):
         ]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            response = result.stdout.strip()
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                print("  DingTalk: request timed out")
+                return False
+
+            response = stdout.decode().strip()
 
             try:
                 resp_json = json.loads(response)

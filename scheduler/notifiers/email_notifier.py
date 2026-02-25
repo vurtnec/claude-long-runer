@@ -5,6 +5,7 @@ Email Notification via SMTP
 Uses Python's built-in smtplib - no external dependencies needed.
 """
 
+import asyncio
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -37,14 +38,18 @@ class EmailNotifier(BaseNotifier):
             smtp_host = email_config.get("smtp_host", "localhost")
             smtp_port = email_config.get("smtp_port", 587)
 
-            with smtplib.SMTP(smtp_host, smtp_port) as server:
-                if email_config.get("use_tls", True):
-                    server.starttls()
-                user = email_config.get("smtp_user")
-                password = email_config.get("smtp_password")
-                if user and password:
-                    server.login(user, password)
-                server.send_message(msg)
+            def _send():
+                with smtplib.SMTP(smtp_host, smtp_port) as server:
+                    if email_config.get("use_tls", True):
+                        server.starttls()
+                    user = email_config.get("smtp_user")
+                    password = email_config.get("smtp_password")
+                    if user and password:
+                        server.login(user, password)
+                    server.send_message(msg)
+
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _send)
 
             print(f"  Email sent to {to_addr}")
             return True

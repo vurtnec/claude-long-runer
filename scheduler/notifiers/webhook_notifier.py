@@ -6,7 +6,7 @@ Sends HTTP POST/PUT requests to any webhook URL.
 Works with Slack, Discord, Feishu, and custom endpoints.
 """
 
-import subprocess
+import asyncio
 from typing import Any, Dict
 
 from .base import BaseNotifier
@@ -33,9 +33,21 @@ class WebhookNotifier(BaseNotifier):
         cmd.extend(["-d", body])
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            print(f"  Webhook sent to {url} (exit code: {result.returncode})")
-            return result.returncode == 0
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                print(f"  Webhook timed out to {url}")
+                return False
+
+            print(f"  Webhook sent to {url} (exit code: {proc.returncode})")
+            return proc.returncode == 0
         except Exception as e:
             print(f"  Webhook send failed to {url}: {e}")
             return False
