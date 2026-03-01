@@ -14,7 +14,6 @@ Feishu (飞书) Push Notification
 
 import asyncio
 import json
-import re
 from typing import Any, Dict
 
 from .base import BaseNotifier
@@ -92,129 +91,25 @@ class FeishuNotifier(BaseNotifier):
             },
         }
 
-    @staticmethod
-    def _markdown_to_lark_elements(text: str) -> list:
-        """Convert standard Markdown into a list of Feishu card elements.
-
-        Same conversion logic used by feishu_bot.py — headings, code blocks,
-        horizontal rules, blockquotes, and tables are mapped to appropriate
-        card element types that Feishu can actually render.
-        """
-        elements: list = []
-        lines = text.split("\n")
-        i = 0
-        buf: list[str] = []
-
-        def _flush():
-            if not buf:
-                return
-            content = "\n".join(buf).strip()
-            if content:
-                elements.append({
-                    "tag": "div",
-                    "text": {"content": content, "tag": "lark_md"},
-                })
-            buf.clear()
-
-        while i < len(lines):
-            line = lines[i]
-
-            # fenced code block
-            if line.strip().startswith("```"):
-                _flush()
-                lang = line.strip().removeprefix("```").strip()
-                code_lines: list[str] = []
-                i += 1
-                while i < len(lines) and not lines[i].strip().startswith("```"):
-                    code_lines.append(lines[i])
-                    i += 1
-                i += 1
-                code_text = "\n".join(code_lines)
-                elements.append({
-                    "tag": "div",
-                    "text": {
-                        "content": f"```{lang}\n{code_text}\n```",
-                        "tag": "lark_md",
-                    },
-                })
-                continue
-
-            # horizontal rule
-            if re.match(r"^\s*([-*_])\s*\1\s*\1[\s\-*_]*$", line):
-                _flush()
-                elements.append({"tag": "hr"})
-                i += 1
-                continue
-
-            # heading
-            m = re.match(r"^(#{1,6})\s+(.*)", line)
-            if m:
-                _flush()
-                heading_text = m.group(2).strip()
-                elements.append({
-                    "tag": "div",
-                    "text": {"content": f"**{heading_text}**", "tag": "lark_md"},
-                })
-                i += 1
-                continue
-
-            # blockquote
-            if line.strip().startswith("> "):
-                _flush()
-                quote_lines: list[str] = []
-                while i < len(lines) and lines[i].strip().startswith(">"):
-                    quote_lines.append(lines[i].strip().removeprefix(">").strip())
-                    i += 1
-                elements.append({
-                    "tag": "note",
-                    "elements": [{"tag": "lark_md", "content": "\n".join(quote_lines)}],
-                })
-                continue
-
-            # table
-            if "|" in line and re.match(r"^\s*\|", line):
-                _flush()
-                table_lines: list[str] = []
-                while i < len(lines) and lines[i].strip().startswith("|"):
-                    table_lines.append(lines[i])
-                    i += 1
-                rows: list[list[str]] = []
-                for tl in table_lines:
-                    cells = [c.strip() for c in tl.strip().strip("|").split("|")]
-                    if all(re.match(r"^[-:]+$", c) for c in cells if c):
-                        continue
-                    rows.append(cells)
-                if rows:
-                    formatted = "**" + "  |  ".join(rows[0]) + "**"
-                    for row in rows[1:]:
-                        formatted += "\n" + "  |  ".join(row)
-                    elements.append({
-                        "tag": "div",
-                        "text": {"content": formatted, "tag": "lark_md"},
-                    })
-                continue
-
-            buf.append(line)
-            i += 1
-
-        _flush()
-        return elements
-
     def _build_markdown_card(self, title: str, body: str) -> dict:
-        """Build interactive card with lark_md for Markdown rendering."""
-        elements = self._markdown_to_lark_elements(body)
-        if not elements:
-            elements = [
-                {
-                    "tag": "div",
-                    "text": {"content": body, "tag": "lark_md"},
-                }
-            ]
+        """Build interactive card using schema 2.0 with ``markdown`` tag.
+
+        Schema 2.0 natively renders headings, code blocks, tables,
+        blockquotes, etc. — no manual Markdown-to-lark_md conversion needed.
+        """
         card: dict = {
+            "schema": "2.0",
             "config": {
                 "wide_screen_mode": True,
             },
-            "elements": elements,
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": body,
+                    }
+                ],
+            },
         }
         if title:
             card["header"] = {
