@@ -66,6 +66,14 @@ MODE_ALIASES = {
 # Reverse mapping for display: SDK permission_mode → user-friendly name
 MODE_DISPLAY = {v: k for k, v in MODE_ALIASES.items()}
 
+# Model aliases: user-friendly names → model IDs
+MODEL_ALIASES = {
+    "opus": "claude-opus-4-6",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5-20251001",
+}
+MODEL_DISPLAY = {v: k for k, v in MODEL_ALIASES.items()}
+
 # Session history persistence
 SESSION_HISTORY_FILE = Path.home() / ".claude-long-runner" / "feishu_sessions.json"
 SESSION_HISTORY_MAX_PER_CHAT = 10
@@ -95,6 +103,7 @@ class ChatSession:
         self.permission_mode: str = "default"
         self.first_message: str | None = None
         self.project_alias: str | None = None
+        self.model: str = "claude-opus-4-6"
 
     async def connect(self):
         """Establish connection to Claude."""
@@ -191,6 +200,7 @@ class FeishuBotServer:
         # Per-chat sessions and project selection
         self._sessions: Dict[str, ChatSession] = {}
         self._chat_project_dirs: Dict[str, Path] = {}  # chat_id → selected project_dir
+        self._chat_models: Dict[str, str] = {}  # chat_id → model ID
 
         # Message dedup: Feishu may deliver the same event multiple times
         self._seen_message_ids: OrderedDict[str, float] = OrderedDict()
@@ -351,6 +361,9 @@ class FeishuBotServer:
         elif command == "/mode":
             arg = parts[1] if len(parts) >= 2 else None
             self._handle_mode(arg, chat_id, message_id)
+        elif command == "/model":
+            arg = parts[1] if len(parts) >= 2 else None
+            self._handle_model(arg, chat_id, message_id)
         elif command == "/resume":
             arg = parts[1] if len(parts) >= 2 else None
             self._handle_resume(arg, chat_id, message_id)
@@ -488,17 +501,19 @@ class FeishuBotServer:
             # Session exists but disconnected, remove and recreate
             del self._sessions[chat_id]
 
-        # Determine project dir for this chat
+        # Determine project dir and model for this chat
         project_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
+        model = self._chat_models.get(chat_id, self.default_model)
 
         # Create new session
-        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (project: {project_dir})")
+        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (project: {project_dir}, model: {model})")
         client = create_client(
             project_dir=project_dir,
-            model=self.default_model,
+            model=model,
         )
 
         session = ChatSession(chat_id=chat_id, client=client, project_dir=project_dir)
+        session.model = model
         session.project_alias = self._get_project_alias(project_dir)
         await session.connect()
         self._sessions[chat_id] = session
@@ -662,12 +677,35 @@ class FeishuBotServer:
                     daemon=True,
                 )
                 thread.start()
+        elif schedule.task.task_type == "standard" and schedule.task.name:
+            model = schedule.task.model or self.default_model
+            project_dir = Path(schedule.task.project_dir).resolve()
+            max_iters = schedule.task.max_iterations or 10
+
+            # Build template vars (same as daemon)
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            template_vars = {"today": today_str, "now": datetime.now().isoformat()}
+            resolved_params = {}
+            for key, value in schedule.task.params.items():
+                if isinstance(value, str):
+                    for tvar, tval in template_vars.items():
+                        value = value.replace(f"{{{{{tvar}}}}}", str(tval))
+                resolved_params[key] = value
+
+            thread = threading.Thread(
+                target=lambda: asyncio.run(
+                    self._execute_standard_and_reply(
+                        schedule.task.name, resolved_params, project_dir,
+                        model, max_iters, chat_id, schedule_name
+                    )
+                ),
+                daemon=True,
+            )
+            thread.start()
         else:
             self._send_message(
                 chat_id,
-                f"Schedule {schedule_name} is a standard task. "
-                "Use the scheduler daemon to execute it:\n"
-                f".venv/bin/python -m scheduler.daemon --run {schedule_name}",
+                f"Schedule {schedule_name}: unsupported task type.",
             )
 
     async def _execute_schedule_and_reply(
@@ -708,6 +746,75 @@ class FeishuBotServer:
             self._send_message(chat_id, f"[{schedule_name}] Error: {e}")
             traceback.print_exc()
 
+    async def _execute_standard_and_reply(
+        self,
+        task_name: str,
+        task_params: Dict[str, Any],
+        project_dir: Path,
+        model: str,
+        max_iterations: int,
+        chat_id: str,
+        schedule_name: str,
+    ):
+        """Execute a standard long-runner task and send result to chat."""
+        from long_run_executor import run_long_task
+
+        start_time = datetime.now()
+        try:
+            project_dir.mkdir(parents=True, exist_ok=True)
+
+            success = await run_long_task(
+                task_name=task_name,
+                task_params=task_params,
+                project_dir=project_dir,
+                model=model,
+                max_iterations=max_iterations,
+                resume=False,
+            )
+
+            duration = datetime.now() - start_time
+            duration_str = str(duration).split(".")[0]
+
+            # Read state file for final result
+            task_dir_name = Path(task_name).name
+            state_file = project_dir / f"{task_dir_name}_state.json"
+            last_response = ""
+            iterations = 0
+            if state_file.exists():
+                try:
+                    with open(state_file) as f:
+                        state_data = json.load(f)
+                    last_response = state_data.get("last_response", "")
+                    iterations = state_data.get("iteration", 0)
+                except (json.JSONDecodeError, IOError):
+                    pass
+
+            if success:
+                summary = last_response[:3000] if last_response else "No response captured"
+                reply = (
+                    f"[{schedule_name}] Task completed successfully\n"
+                    f"Iterations: {iterations} | Duration: {duration_str}\n\n"
+                    f"{summary}"
+                )
+            else:
+                reply = (
+                    f"[{schedule_name}] Task failed\n"
+                    f"Iterations: {iterations} | Duration: {duration_str}\n\n"
+                    f"Success conditions not met.\n"
+                    f"{last_response[:2000] if last_response else ''}"
+                )
+
+            self._send_message(chat_id, reply)
+
+        except Exception as e:
+            duration = datetime.now() - start_time
+            duration_str = str(duration).split(".")[0]
+            self._send_message(
+                chat_id,
+                f"[{schedule_name}] Error ({duration_str})\n{e}",
+            )
+            traceback.print_exc()
+
     def _send_help(self, chat_id: str, message_id: str):
         """Send help message."""
         help_text = (
@@ -715,9 +822,10 @@ class FeishuBotServer:
             "/help  — Show this help\n"
             "/project — Show current project / switch project\n"
             "/mode [plan|auto|default] — Show or switch permission mode\n"
+            "/model [opus|sonnet|haiku] — Show or switch model\n"
             "/resume [number] — List recent sessions / resume by number\n"
             "/list  — List available schedules\n"
-            "/run <name> — Run a predefined schedule\n"
+            "/run <name> — Run a schedule (inline or standard task)\n"
             "/new   — Reset conversation (start fresh)\n"
             "/stop  — Stop and disconnect current session\n\n"
             "Or just send a message to chat with Claude.\n"
@@ -818,6 +926,53 @@ class FeishuBotServer:
         except Exception as e:
             self._send_message(chat_id, f"Failed to switch mode: {e}")
 
+    # ── Model switching ──────────────────────────────────────────────────
+
+    def _handle_model(self, arg: str | None, chat_id: str, message_id: str):
+        """Handle /model command: show or switch model."""
+        session = self._sessions.get(chat_id)
+
+        if arg is None:
+            # Show current model
+            if session:
+                display = MODEL_DISPLAY.get(session.model, session.model)
+                self._reply_text(message_id, f"Current model: {display} ({session.model})")
+            else:
+                current = self._chat_models.get(chat_id, self.default_model)
+                display = MODEL_DISPLAY.get(current, current)
+                self._reply_text(message_id, f"Current model: {display} (no active session)")
+            return
+
+        arg = arg.lower().strip()
+        if arg not in MODEL_ALIASES:
+            available = ", ".join(MODEL_ALIASES.keys())
+            self._reply_text(
+                message_id,
+                f"Unknown model: {arg}\nAvailable models: {available}",
+            )
+            return
+
+        new_model = MODEL_ALIASES[arg]
+        self._chat_models[chat_id] = new_model
+
+        # Model is embedded in client — need to close and recreate session
+        if session and session.connected:
+            if session.session_id:
+                self._save_session_to_history(chat_id, session)
+            if self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self._close_session(chat_id), self._loop
+                )
+            self._send_message(
+                chat_id,
+                f"Model switched to: {arg} ({new_model})\nSession reset — send a message to start.",
+            )
+        else:
+            self._send_message(
+                chat_id,
+                f"Model set to: {arg} ({new_model})\nWill take effect on next session.",
+            )
+
     # ── Resume / session history ────────────────────────────────────────
 
     def _get_project_alias(self, project_dir: Path) -> str | None:
@@ -868,6 +1023,7 @@ class FeishuBotServer:
                 "project_dir": str(session.project_dir),
                 "created_at": session.created_at.isoformat(),
                 "last_active": session.last_active.isoformat(),
+                "model": session.model,
                 "source": "bot",
             }
             chat_history.insert(0, entry)  # newest first
@@ -875,6 +1031,7 @@ class FeishuBotServer:
             # Update existing entry
             entry["last_active"] = session.last_active.isoformat()
             entry["permission_mode"] = session.permission_mode
+            entry["model"] = session.model
             if session.first_message and entry.get("summary") == "(no message)":
                 entry["summary"] = session.first_message[:30]
 
@@ -1028,8 +1185,10 @@ class FeishuBotServer:
 
         project_dir = Path(project_dir_str)
 
-        # Auto-switch project if different from current
+        # Auto-switch project and model if different from current
         self._chat_project_dirs[chat_id] = project_dir
+        model = entry.get("model", self.default_model)
+        self._chat_models[chat_id] = model
 
         # Resume asynchronously
         if self._loop and self._loop.is_running():
@@ -1044,15 +1203,17 @@ class FeishuBotServer:
             # Close current session if any
             await self._close_session(chat_id)
 
-            print(f"  [Session] Resuming session {session_id[:8]}... for chat {chat_id[:8]}... (project: {project_dir})")
+            model = entry.get("model", self.default_model)
+            print(f"  [Session] Resuming session {session_id[:8]}... for chat {chat_id[:8]}... (project: {project_dir}, model: {model})")
             client = create_client(
                 project_dir=project_dir,
-                model=self.default_model,
+                model=model,
                 resume=session_id,
             )
 
             session = ChatSession(chat_id=chat_id, client=client, project_dir=project_dir)
             session.session_id = session_id
+            session.model = model
             session.project_alias = project_alias
             session.first_message = entry.get("summary")
             session.permission_mode = entry.get("permission_mode", "default")

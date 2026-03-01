@@ -63,6 +63,8 @@ BASE_ALLOWED_COMMANDS = {
     "curl",
     "kill",
     "xargs",
+    # Browser automation
+    "playwright-cli",
     # Common shell utilities
     "true",
     "false",
@@ -83,6 +85,10 @@ BASE_ALLOWED_COMMANDS = {
     "tr",
     "cut",
     "tee",
+    "bundle",
+    "gem",
+    "fastlane",
+    "sentry-cli",
 }
 
 # Task-specific allowed commands (set at runtime)
