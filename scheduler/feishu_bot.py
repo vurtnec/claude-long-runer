@@ -24,6 +24,7 @@ Feishu Bot Server (飞书应用机器人)
 import argparse
 import asyncio
 import json
+import re
 import sys
 import threading
 import time
@@ -847,14 +848,176 @@ class FeishuBotServer:
 
         self._reply_text(message_id, "\n".join(lines))
 
+    # ── Markdown → Feishu lark_md card conversion ─────────────────────
+
+    @staticmethod
+    def _markdown_to_lark_elements(text: str) -> list:
+        """Convert standard Markdown text into a list of Feishu card elements.
+
+        lark_md only supports a subset of Markdown.  This method parses the
+        input and produces appropriate card element types so that headings,
+        code blocks, horizontal rules, blockquotes and tables are all rendered
+        nicely instead of appearing as raw Markdown syntax.
+        """
+        elements: list = []
+        lines = text.split("\n")
+        i = 0
+        buf: list[str] = []  # accumulates normal lark_md lines
+
+        def _flush_buf():
+            """Flush accumulated normal lines into a single lark_md div."""
+            if not buf:
+                return
+            content = "\n".join(buf).strip()
+            if content:
+                elements.append({
+                    "tag": "div",
+                    "text": {"content": content, "tag": "lark_md"},
+                })
+            buf.clear()
+
+        while i < len(lines):
+            line = lines[i]
+
+            # ── Fenced code block ```...``` ──────────────────────────
+            if line.strip().startswith("```"):
+                _flush_buf()
+                lang = line.strip().removeprefix("```").strip()
+                code_lines: list[str] = []
+                i += 1
+                while i < len(lines) and not lines[i].strip().startswith("```"):
+                    code_lines.append(lines[i])
+                    i += 1
+                # skip closing ```
+                i += 1
+                code_text = "\n".join(code_lines)
+                # Code block must be the ONLY content in a lark_md element
+                # to render properly (Feishu ≥ v7.6)
+                elements.append({
+                    "tag": "div",
+                    "text": {
+                        "content": f"```{lang}\n{code_text}\n```",
+                        "tag": "lark_md",
+                    },
+                })
+                continue
+
+            # ── Horizontal rule ---  ***  ___ ────────────────────────
+            if re.match(r"^\s*([-*_])\s*\1\s*\1[\s\-*_]*$", line):
+                _flush_buf()
+                elements.append({"tag": "hr"})
+                i += 1
+                continue
+
+            # ── Heading # ## ### … ───────────────────────────────────
+            m = re.match(r"^(#{1,6})\s+(.*)", line)
+            if m:
+                _flush_buf()
+                level = len(m.group(1))
+                heading_text = m.group(2).strip()
+                if level <= 2:
+                    # Use a column_set with bold text to simulate heading
+                    elements.append({
+                        "tag": "div",
+                        "text": {
+                            "content": f"**{heading_text}**",
+                            "tag": "lark_md",
+                        },
+                    })
+                else:
+                    # Smaller headings → just bold
+                    elements.append({
+                        "tag": "div",
+                        "text": {
+                            "content": f"**{heading_text}**",
+                            "tag": "lark_md",
+                        },
+                    })
+                i += 1
+                continue
+
+            # ── Blockquote > text ────────────────────────────────────
+            if line.strip().startswith("> "):
+                _flush_buf()
+                quote_lines: list[str] = []
+                while i < len(lines) and lines[i].strip().startswith(">"):
+                    quote_lines.append(
+                        lines[i].strip().removeprefix(">").strip()
+                    )
+                    i += 1
+                quote_text = "\n".join(quote_lines)
+                # Render as a note element (grey background)
+                elements.append({
+                    "tag": "note",
+                    "elements": [
+                        {"tag": "lark_md", "content": quote_text},
+                    ],
+                })
+                continue
+
+            # ── Markdown table | col | col | ─────────────────────────
+            if "|" in line and re.match(r"^\s*\|", line):
+                _flush_buf()
+                table_lines: list[str] = []
+                while i < len(lines) and lines[i].strip().startswith("|"):
+                    table_lines.append(lines[i])
+                    i += 1
+                # Parse into rows, skip separator row (|---|---|)
+                rows: list[list[str]] = []
+                for tl in table_lines:
+                    cells = [
+                        c.strip()
+                        for c in tl.strip().strip("|").split("|")
+                    ]
+                    # Skip separator rows like |---|---|
+                    if all(re.match(r"^[-:]+$", c) for c in cells if c):
+                        continue
+                    rows.append(cells)
+                # Format as aligned text (best effort for lark_md)
+                if rows:
+                    header_row = rows[0]
+                    formatted = "**" + "  |  ".join(header_row) + "**"
+                    for row in rows[1:]:
+                        formatted += "\n" + "  |  ".join(row)
+                    elements.append({
+                        "tag": "div",
+                        "text": {"content": formatted, "tag": "lark_md"},
+                    })
+                continue
+
+            # ── Normal line → accumulate ─────────────────────────────
+            buf.append(line)
+            i += 1
+
+        _flush_buf()
+        return elements
+
+    def _build_interactive_card(self, text: str) -> str:
+        """Build an interactive card JSON string with lark_md for Markdown rendering."""
+        elements = self._markdown_to_lark_elements(text)
+        if not elements:
+            elements = [
+                {
+                    "tag": "div",
+                    "text": {"content": text, "tag": "lark_md"},
+                }
+            ]
+        card = {
+            "config": {
+                "wide_screen_mode": True,
+            },
+            "elements": elements,
+        }
+        return json.dumps(card)
+
     def _reply_text(self, message_id: str, text: str):
-        """Reply to a specific message with text."""
+        """Reply to a specific message with interactive card (Markdown rendered)."""
         request = ReplyMessageRequest.builder() \
             .message_id(message_id) \
             .request_body(
                 ReplyMessageRequestBody.builder()
-                .msg_type("text")
-                .content(json.dumps({"text": text}))
+                .msg_type("interactive")
+                .content(self._build_interactive_card(text))
                 .build()
             ).build()
 
@@ -863,14 +1026,14 @@ class FeishuBotServer:
             print(f"  [Feishu Bot] Reply failed: {response.code} - {response.msg}")
 
     def _send_message(self, chat_id: str, text: str):
-        """Send a new message to a chat."""
+        """Send a new message to a chat with interactive card (Markdown rendered)."""
         request = CreateMessageRequest.builder() \
             .receive_id_type("chat_id") \
             .request_body(
                 CreateMessageRequestBody.builder()
                 .receive_id(chat_id)
-                .msg_type("text")
-                .content(json.dumps({"text": text}))
+                .msg_type("interactive")
+                .content(self._build_interactive_card(text))
                 .build()
             ).build()
 
