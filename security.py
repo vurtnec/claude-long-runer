@@ -89,6 +89,7 @@ BASE_ALLOWED_COMMANDS = {
     "gem",
     "fastlane",
     "sentry-cli",
+    "date"
 }
 
 # Task-specific allowed commands (set at runtime)
