@@ -16,6 +16,10 @@ build/
 .env.*
 !.env.example
 
+# Scheduler config (contains personal paths)
+scheduler_config.yaml
+!scheduler_config.example.yaml
+
 # State files (generated during execution)
 *_state.json
 scheduler_history.json

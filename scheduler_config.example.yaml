@@ -1,0 +1,65 @@
+# Scheduler Global Configuration
+# ================================
+# Copy this file to scheduler_config.yaml and configure your settings.
+
+daemon:
+  poll_interval_seconds: 30       # How often to check triggers
+  schedules_dir: "schedules"      # Directory containing schedule YAML files
+  log_file: "scheduler.log"
+
+# Notification service credentials
+notifications:
+  wechat:
+    # Server酱 (ServerChan): https://sct.ftqq.com/
+    # 免费注册，每天5条免费推送到微信
+    serverchan_key: "{{env.SERVERCHAN_KEY}}"
+
+    # WxPusher: https://wxpusher.zjiecode.com/
+    # 完全免费，无限推送
+    wxpusher_token: "{{env.WXPUSHER_TOKEN}}"
+    wxpusher_uid: "{{env.WXPUSHER_UID}}"
+
+  feishu:
+    # 飞书自定义机器人 (用于定时任务通知推送，单向)
+    webhook_url: "{{env.FEISHU_WEBHOOK_URL}}"
+    # 飞书应用机器人 (用于接收群消息触发任务，双向)
+    # 在 open.feishu.cn 创建企业自建应用，启用机器人能力
+    app_id: "{{env.FEISHU_APP_ID}}"
+    app_secret: "{{env.FEISHU_APP_SECRET}}"
+
+  dingtalk:
+    # 钉钉自定义机器人: 群设置 → 智能群助手 → 添加机器人 → 自定义
+    # 安全设置选「自定义关键词」，填入「通知」
+    webhook_url: "{{env.DINGTALK_WEBHOOK_URL}}"
+
+  email:
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    smtp_user: "{{env.SMTP_USER}}"
+    smtp_password: "{{env.SMTP_PASSWORD}}"
+    from_address: "scheduler@example.com"
+    use_tls: true
+
+# Execution history
+history:
+  max_entries: 1000
+  history_file: "scheduler_history.json"
+
+# Default values for all scheduled tasks (overridable per schedule)
+defaults:
+  model: "claude-opus-4-6"
+  max_iterations: 10
+  timeout_minutes: 120
+
+# Feishu bot settings (for receiving messages and triggering tasks)
+feishu_bot:
+  enabled: true                     # Start bot alongside daemon
+  model: "claude-opus-4-6"
+  max_turns: 10
+  # allowed_user_ids: []            # Empty = allow all; add open_ids to restrict
+
+  # 项目列表：别名 → 绝对路径。用 /project <alias> 切换
+  projects:
+    my-project: "/path/to/your/project"
+    another: "/path/to/another/project"
+  default_project: "my-project"     # 默认项目别名
