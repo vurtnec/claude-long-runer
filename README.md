@@ -186,7 +186,3 @@ python -m scheduler.daemon              # or with daemon (auto-starts if enabled
 | _(any message)_ | Chat with Claude |
 
 ---
-
-## Credits
-
-Based on Anthropic's [autonomous-coding](https://github.com/anthropics/claude-quickstarts/tree/main/autonomous-coding) quickstart.
