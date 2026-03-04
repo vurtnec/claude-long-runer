@@ -886,6 +886,21 @@ class FeishuBotServer:
         response = self.lark_client.im.v1.message.reply(request)
         if not response.success():
             print(f"  [Feishu Bot] Reply failed: {response.code} - {response.msg}")
+            self._reply_plain_text(message_id, text)
+
+    def _reply_plain_text(self, message_id: str, text: str):
+        """Fallback: reply as plain text when interactive card fails."""
+        request = ReplyMessageRequest.builder() \
+            .message_id(message_id) \
+            .request_body(
+                ReplyMessageRequestBody.builder()
+                .msg_type("text")
+                .content(json.dumps({"text": text}))
+                .build()
+            ).build()
+        response = self.lark_client.im.v1.message.reply(request)
+        if not response.success():
+            print(f"  [Feishu Bot] Plain text reply also failed: {response.code} - {response.msg}")
 
     def _send_message(self, chat_id: str, text: str):
         """Send a new message to a chat with interactive card (Markdown rendered)."""
@@ -902,6 +917,22 @@ class FeishuBotServer:
         response = self.lark_client.im.v1.message.create(request)
         if not response.success():
             print(f"  [Feishu Bot] Send failed: {response.code} - {response.msg}")
+            self._send_plain_text(chat_id, text)
+
+    def _send_plain_text(self, chat_id: str, text: str):
+        """Fallback: send as plain text when interactive card fails."""
+        request = CreateMessageRequest.builder() \
+            .receive_id_type("chat_id") \
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
+                .msg_type("text")
+                .content(json.dumps({"text": text}))
+                .build()
+            ).build()
+        response = self.lark_client.im.v1.message.create(request)
+        if not response.success():
+            print(f"  [Feishu Bot] Plain text send also failed: {response.code} - {response.msg}")
 
     # ── Mode detection ──────────────────────────────────────────────────
 
@@ -1074,8 +1105,8 @@ class FeishuBotServer:
         """
         Scan Claude Code CLI session files for a given project.
 
-        CLI sessions are stored at ~/.claude/projects/{encoded_dir}/*.jsonl
-        where encoded_dir = project path with '/' replaced by '-'.
+        Reads sessions-index.json (CLI's authoritative metadata) first,
+        falls back to scanning .jsonl files directly if index is unavailable.
         """
         encoded_dir = str(project_dir.resolve()).replace("/", "-")
         sessions_path = CLAUDE_SESSIONS_DIR / encoded_dir
@@ -1085,15 +1116,54 @@ class FeishuBotServer:
         exclude_ids = exclude_ids or set()
         results = []
 
+        # Try sessions-index.json first (CLI's authoritative metadata)
+        index_file = sessions_path / "sessions-index.json"
+        if index_file.exists():
+            try:
+                with open(index_file) as f:
+                    index_data = json.load(f)
+
+                # sessions-index.json is { "version": N, "entries": [...] }
+                entries = index_data.get("entries", []) if isinstance(index_data, dict) else index_data
+
+                for entry in entries:
+                    session_id = entry.get("sessionId", "")
+                    if session_id in exclude_ids:
+                        continue
+                    # Only include if the jsonl file actually exists
+                    jsonl_path = sessions_path / f"{session_id}.jsonl"
+                    if not jsonl_path.exists():
+                        continue
+
+                    summary = entry.get("summary") or entry.get("firstPrompt", "")[:30] or "(no message)"
+                    modified = entry.get("modified", "")
+                    created = entry.get("created", "")
+                    project_alias = self._get_project_alias(project_dir)
+
+                    results.append({
+                        "session_id": session_id,
+                        "summary": summary[:50],
+                        "permission_mode": "default",
+                        "project_alias": project_alias,
+                        "project_dir": str(project_dir),
+                        "created_at": created,
+                        "last_active": modified or created,
+                        "source": "cli",
+                    })
+
+                results.sort(key=lambda x: x["last_active"], reverse=True)
+                return results
+            except (json.JSONDecodeError, IOError, KeyError):
+                pass  # Fall through to legacy scan
+
+        # Fallback: scan .jsonl files directly (legacy behavior)
         for jsonl_file in sessions_path.glob("*.jsonl"):
             session_id = jsonl_file.stem
             if session_id in exclude_ids:
                 continue
 
-            # Get modification time as last_active
             mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime)
 
-            # Read first user message for summary
             summary = ""
             try:
                 with open(jsonl_file) as f:
@@ -1104,7 +1174,6 @@ class FeishuBotServer:
                             for block in content:
                                 if isinstance(block, dict) and block.get("type") == "text":
                                     text = block["text"].strip()
-                                    # Skip system tags
                                     if not text.startswith("<"):
                                         summary = text[:30]
                                         break
@@ -1127,7 +1196,6 @@ class FeishuBotServer:
                 "source": "cli",
             })
 
-        # Sort by last_active descending
         results.sort(key=lambda x: x["last_active"], reverse=True)
         return results
 
