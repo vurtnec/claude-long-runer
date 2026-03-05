@@ -660,10 +660,12 @@ class FeishuBotServer:
             model = schedule.task.model or self.default_model
             project_dir = Path(schedule.task.project_dir).resolve()
 
+            timeout = schedule.timeout_minutes or 15
+
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(
                     self._execute_schedule_and_reply(
-                        prompt, project_dir, model, chat_id, schedule_name
+                        prompt, project_dir, model, chat_id, schedule_name, timeout
                     ),
                     self._loop,
                 )
@@ -671,7 +673,7 @@ class FeishuBotServer:
                 thread = threading.Thread(
                     target=lambda: asyncio.run(
                         self._execute_schedule_and_reply(
-                            prompt, project_dir, model, chat_id, schedule_name
+                            prompt, project_dir, model, chat_id, schedule_name, timeout
                         )
                     ),
                     daemon=True,
@@ -681,6 +683,7 @@ class FeishuBotServer:
             model = schedule.task.model or self.default_model
             project_dir = Path(schedule.task.project_dir).resolve()
             max_iters = schedule.task.max_iterations or 10
+            timeout = schedule.timeout_minutes or 30
 
             # Build template vars (same as daemon)
             today_str = datetime.now().strftime("%Y-%m-%d")
@@ -696,7 +699,7 @@ class FeishuBotServer:
                 target=lambda: asyncio.run(
                     self._execute_standard_and_reply(
                         schedule.task.name, resolved_params, project_dir,
-                        model, max_iters, chat_id, schedule_name
+                        model, max_iters, chat_id, schedule_name, timeout
                     )
                 ),
                 daemon=True,
@@ -715,17 +718,21 @@ class FeishuBotServer:
         model: str,
         chat_id: str,
         schedule_name: str,
+        timeout_minutes: int = 60,
     ):
         """Execute a schedule's inline task (one-shot, no session persistence)."""
         from .inline_executor import run_inline_task
 
         start_time = datetime.now()
         try:
-            result = await run_inline_task(
-                prompt=prompt,
-                project_dir=project_dir,
-                model=model,
-                max_turns=5,
+            result = await asyncio.wait_for(
+                run_inline_task(
+                    prompt=prompt,
+                    project_dir=project_dir,
+                    model=model,
+                    max_turns=5,
+                ),
+                timeout=timeout_minutes * 60,
             )
 
             duration = datetime.now() - start_time
@@ -742,6 +749,13 @@ class FeishuBotServer:
 
             self._send_message(chat_id, reply)
 
+        except asyncio.TimeoutError:
+            duration = datetime.now() - start_time
+            duration_str = str(duration).split(".")[0]
+            self._send_message(
+                chat_id,
+                f"[{schedule_name}] Timed out after {timeout_minutes} minutes ({duration_str})",
+            )
         except Exception as e:
             self._send_message(chat_id, f"[{schedule_name}] Error: {e}")
             traceback.print_exc()
@@ -755,6 +769,7 @@ class FeishuBotServer:
         max_iterations: int,
         chat_id: str,
         schedule_name: str,
+        timeout_minutes: int = 120,
     ):
         """Execute a standard long-runner task and send result to chat."""
         from long_run_executor import run_long_task
@@ -763,13 +778,16 @@ class FeishuBotServer:
         try:
             project_dir.mkdir(parents=True, exist_ok=True)
 
-            success = await run_long_task(
-                task_name=task_name,
-                task_params=task_params,
-                project_dir=project_dir,
-                model=model,
-                max_iterations=max_iterations,
-                resume=False,
+            success = await asyncio.wait_for(
+                run_long_task(
+                    task_name=task_name,
+                    task_params=task_params,
+                    project_dir=project_dir,
+                    model=model,
+                    max_iterations=max_iterations,
+                    resume=False,
+                ),
+                timeout=timeout_minutes * 60,
             )
 
             duration = datetime.now() - start_time
@@ -806,6 +824,13 @@ class FeishuBotServer:
 
             self._send_message(chat_id, reply)
 
+        except asyncio.TimeoutError:
+            duration = datetime.now() - start_time
+            duration_str = str(duration).split(".")[0]
+            self._send_message(
+                chat_id,
+                f"[{schedule_name}] Timed out after {timeout_minutes} minutes ({duration_str})",
+            )
         except Exception as e:
             duration = datetime.now() - start_time
             duration_str = str(duration).split(".")[0]
