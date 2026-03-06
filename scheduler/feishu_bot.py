@@ -466,7 +466,7 @@ class FeishuBotServer:
         # Run task asynchronously in the event loop
         if self._loop and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(
-                self._execute_and_reply(text, chat_id, message_id),
+                self._execute_with_timeout(text, chat_id, message_id),
                 self._loop,
             )
         else:
@@ -483,10 +483,24 @@ class FeishuBotServer:
         asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(
-                self._execute_and_reply(text, chat_id, message_id)
+                self._execute_with_timeout(text, chat_id, message_id)
             )
         finally:
             loop.close()
+
+    async def _execute_with_timeout(self, text: str, chat_id: str, message_id: str):
+        """Wrapper that adds a 10-minute timeout to _execute_and_reply."""
+        try:
+            await asyncio.wait_for(
+                self._execute_and_reply(text, chat_id, message_id),
+                timeout=600,  # 10 minutes
+            )
+        except asyncio.TimeoutError:
+            self._send_message(
+                chat_id,
+                "Response timed out after 10 minutes.\n"
+                "The session is still active — try sending a shorter request.",
+            )
 
     async def _get_or_create_session(self, chat_id: str) -> ChatSession:
         """Get existing session or create a new one for the chat."""
@@ -659,13 +673,14 @@ class FeishuBotServer:
 
             model = schedule.task.model or self.default_model
             project_dir = Path(schedule.task.project_dir).resolve()
-
             timeout = schedule.timeout_minutes or 15
+            max_turns = schedule.task.max_turns or 5
 
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(
                     self._execute_schedule_and_reply(
-                        prompt, project_dir, model, chat_id, schedule_name, timeout
+                        prompt, project_dir, model, chat_id, schedule_name,
+                        timeout, max_turns
                     ),
                     self._loop,
                 )
@@ -673,7 +688,8 @@ class FeishuBotServer:
                 thread = threading.Thread(
                     target=lambda: asyncio.run(
                         self._execute_schedule_and_reply(
-                            prompt, project_dir, model, chat_id, schedule_name, timeout
+                            prompt, project_dir, model, chat_id, schedule_name,
+                            timeout, max_turns
                         )
                     ),
                     daemon=True,
@@ -718,7 +734,8 @@ class FeishuBotServer:
         model: str,
         chat_id: str,
         schedule_name: str,
-        timeout_minutes: int = 60,
+        timeout_minutes: int = 15,
+        max_turns: int = 5,
     ):
         """Execute a schedule's inline task (one-shot, no session persistence)."""
         from .inline_executor import run_inline_task
@@ -730,7 +747,7 @@ class FeishuBotServer:
                     prompt=prompt,
                     project_dir=project_dir,
                     model=model,
-                    max_turns=5,
+                    max_turns=max_turns,
                 ),
                 timeout=timeout_minutes * 60,
             )

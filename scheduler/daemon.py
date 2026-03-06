@@ -167,11 +167,11 @@ class SchedulerDaemon:
 
             await asyncio.sleep(self.poll_interval)
 
-        # Wait for any running tasks to complete
+        # Cancel any running tasks on shutdown
         if self._active_tasks:
-            print(
-                f"\nWaiting for {len(self._active_tasks)} active task(s) to complete..."
-            )
+            print(f"\nCancelling {len(self._active_tasks)} active task(s)...")
+            for task in self._active_tasks.values():
+                task.cancel()
             await asyncio.gather(*self._active_tasks.values(), return_exceptions=True)
 
         print("Scheduler daemon stopped.")
@@ -256,11 +256,17 @@ class SchedulerDaemon:
         last_response = ""
         retries = 0
 
+        timeout_minutes = schedule.timeout_minutes or self.defaults.get("timeout_minutes", 60)
+        print(f"  Timeout: {timeout_minutes} minutes")
+
         while retries <= schedule.retry.max_retries:
             try:
                 if schedule.task.task_type == "inline":
                     # Inline task: direct prompt execution
-                    result = await self._execute_inline(schedule, model, template_vars)
+                    result = await asyncio.wait_for(
+                        self._execute_inline(schedule, model, template_vars),
+                        timeout=timeout_minutes * 60,
+                    )
                     success = result["success"]
                     last_response = result.get("response_text", "")
                     iterations = result.get("turns_used", 0)
@@ -268,8 +274,9 @@ class SchedulerDaemon:
                         error_msg = result.get("error", "Inline task failed")
                 else:
                     # Standard task: use existing run_long_task()
-                    result = await self._execute_standard(
-                        schedule, model, resolved_params
+                    result = await asyncio.wait_for(
+                        self._execute_standard(schedule, model, resolved_params),
+                        timeout=timeout_minutes * 60,
                     )
                     success = result["success"]
                     last_response = result.get("last_response", "")
@@ -280,6 +287,10 @@ class SchedulerDaemon:
                 if success:
                     break
 
+            except asyncio.TimeoutError:
+                error_msg = f"Task timed out after {timeout_minutes} minutes"
+                print(f"  Task {schedule.name}: {error_msg}")
+
             except Exception as e:
                 error_msg = str(e)
                 print(f"  Task {schedule.name} failed: {e}")
@@ -288,7 +299,13 @@ class SchedulerDaemon:
             if retries <= schedule.retry.max_retries:
                 delay = schedule.retry.retry_delay_minutes * 60
                 print(f"  Retrying in {schedule.retry.retry_delay_minutes} minutes...")
-                await asyncio.sleep(delay)
+                for _ in range(delay):
+                    if not self._running:
+                        error_msg = "Shutdown requested during retry wait"
+                        break
+                    await asyncio.sleep(1)
+                if not self._running:
+                    break
 
         # Calculate duration
         end_time = datetime.now()
@@ -415,7 +432,11 @@ class SchedulerDaemon:
                 print(f"  Unknown notifier type: {notif.type}")
 
     def _shutdown(self):
-        """Handle graceful shutdown signal."""
+        """Handle graceful shutdown signal. Second Ctrl+C force exits."""
+        if not self._running:
+            print("\nForce shutdown...")
+            import os
+            os._exit(1)
         print("\nShutdown signal received...")
         self._running = False
 
