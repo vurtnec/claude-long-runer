@@ -3,7 +3,7 @@
     "enabled": false
   },
   "permissions": {
-    "defaultMode": "acceptEdits",
+    "defaultMode": "default",
     "allow": [
       "Read(./**)",
       "Write(./**)",
@@ -21,6 +21,8 @@
       "mcp__playwright__browser_evaluate",
       "mcp__playwright__browser_take_screenshot",
       "mcp__amap-maps__*",
+      "mcp__polymarket__*",
+      "mcp__notion__*",
       "mcp__xiaohongshu-mcp__*"
     ]
   }

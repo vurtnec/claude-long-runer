@@ -57,10 +57,9 @@ SESSION_TIMEOUT_SECONDS = 6 * 60 * 60
 
 # Mode aliases: user-friendly names → SDK permission_mode values
 MODE_ALIASES = {
-    "plan": "plan",
-    "auto": "acceptEdits",
-    "default": "default",
-    "bypass": "bypassPermissions",
+    "plan": "plan",             # Plan — suggest only, no execution
+    "ask": "default",           # Ask before edits
+    "auto": "acceptEdits",      # Edit automatically
 }
 
 # Reverse mapping for display: SDK permission_mode → user-friendly name
@@ -104,6 +103,10 @@ class ChatSession:
         self.first_message: str | None = None
         self.project_alias: str | None = None
         self.model: str = "claude-opus-4-6"
+        # Progress tracking for /status command
+        self.working_since: datetime | None = None  # set when agent starts processing
+        self.tool_count: int = 0
+        self.recent_tools: list[dict] = []  # last 5: [{"name": "Edit", "input": "file.py ..."}]
 
     async def connect(self):
         """Establish connection to Claude."""
@@ -201,6 +204,7 @@ class FeishuBotServer:
         self._sessions: Dict[str, ChatSession] = {}
         self._chat_project_dirs: Dict[str, Path] = {}  # chat_id → selected project_dir
         self._chat_models: Dict[str, str] = {}  # chat_id → model ID
+        self._chat_modes: Dict[str, str] = {}  # chat_id → permission mode
 
         # Message dedup: Feishu may deliver the same event multiple times
         self._seen_message_ids: OrderedDict[str, float] = OrderedDict()
@@ -355,6 +359,10 @@ class FeishuBotServer:
             self._handle_new_session(chat_id, message_id)
         elif command == "/stop":
             self._handle_stop_session(chat_id, message_id)
+        elif command == "/cancel":
+            self._handle_cancel(chat_id, message_id)
+        elif command == "/status":
+            self._handle_status(chat_id, message_id)
         elif command == "/project":
             alias = parts[1] if len(parts) >= 2 else None
             self._handle_project(alias, chat_id, message_id)
@@ -406,6 +414,51 @@ class FeishuBotServer:
             self._reply_text(message_id, "Session stopped and disconnected.")
         else:
             self._reply_text(message_id, "No active session for this chat.")
+
+    def _handle_cancel(self, chat_id: str, message_id: str):
+        """Handle /cancel command: interrupt the current agent request without closing session."""
+        session = self._sessions.get(chat_id)
+        if not session:
+            self._reply_text(message_id, "No active session.")
+            return
+        if not session.lock.locked():
+            self._reply_text(message_id, "Agent is not processing any request.")
+            return
+        try:
+            session.client.interrupt()
+            self._reply_text(message_id, "Request interrupted. You can send a new message.")
+        except Exception as e:
+            self._reply_text(message_id, f"Failed to interrupt: {e}")
+
+    def _handle_status(self, chat_id: str, message_id: str):
+        """Handle /status command: show current session working state."""
+        session = self._sessions.get(chat_id)
+        if not session:
+            self._reply_text(message_id, "No active session.")
+            return
+
+        if not session.lock.locked() or not session.working_since:
+            mode_display = MODE_DISPLAY.get(session.permission_mode, session.permission_mode)
+            self._reply_text(message_id, f"Idle. ({mode_display} mode)")
+            return
+
+        elapsed = (datetime.now() - session.working_since).total_seconds()
+        mins = int(elapsed // 60)
+        secs = int(elapsed % 60)
+        mode_display = MODE_DISPLAY.get(session.permission_mode, session.permission_mode)
+
+        lines = [f"Working for {mins}m{secs}s | {session.tool_count} tool calls | {mode_display} mode\n"]
+        if session.recent_tools:
+            lines.append("Recent tools:")
+            for t in session.recent_tools:
+                name = t.get("name", "?")
+                inp = t.get("input", "")
+                if inp:
+                    lines.append(f"  {name}({inp})")
+                else:
+                    lines.append(f"  {name}")
+
+        self._reply_text(message_id, "\n".join(lines))
 
     def _handle_project(self, alias: Optional[str], chat_id: str, message_id: str):
         """Handle /project command: show or switch project."""
@@ -489,16 +542,16 @@ class FeishuBotServer:
             loop.close()
 
     async def _execute_with_timeout(self, text: str, chat_id: str, message_id: str):
-        """Wrapper that adds a 10-minute timeout to _execute_and_reply."""
+        """Wrapper that adds a 30-minute timeout to _execute_and_reply."""
         try:
             await asyncio.wait_for(
                 self._execute_and_reply(text, chat_id, message_id),
-                timeout=600,  # 10 minutes
+                timeout=1800,  # 30 minutes
             )
         except asyncio.TimeoutError:
             self._send_message(
                 chat_id,
-                "Response timed out after 10 minutes.\n"
+                "Response timed out after 30 minutes.\n"
                 "The session is still active — try sending a shorter request.",
             )
 
@@ -515,19 +568,23 @@ class FeishuBotServer:
             # Session exists but disconnected, remove and recreate
             del self._sessions[chat_id]
 
-        # Determine project dir and model for this chat
+        # Determine project dir, model, and mode for this chat
         project_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
         model = self._chat_models.get(chat_id, self.default_model)
+        mode = self._chat_modes.get(chat_id)
 
         # Create new session
-        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (project: {project_dir}, model: {model})")
+        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (project: {project_dir}, model: {model}, mode: {mode or 'default'})")
         client = create_client(
             project_dir=project_dir,
             model=model,
+            permission_mode=mode,
         )
 
         session = ChatSession(chat_id=chat_id, client=client, project_dir=project_dir)
         session.model = model
+        if mode:
+            session.permission_mode = mode
         session.project_alias = self._get_project_alias(project_dir)
         await session.connect()
         self._sessions[chat_id] = session
@@ -558,6 +615,11 @@ class FeishuBotServer:
                 # Send the prompt to the existing conversation
                 await session.client.query(prompt)
 
+                # Reset progress tracking
+                session.working_since = datetime.now()
+                session.tool_count = 0
+                session.recent_tools = []
+
                 # Collect response (stops automatically at ResultMessage)
                 response_text = ""
                 async for msg in session.client.receive_response():
@@ -571,6 +633,16 @@ class FeishuBotServer:
                                 response_text += block.text
                                 print(block.text, end="", flush=True)
                             elif block_type == "ToolUseBlock" and hasattr(block, "name"):
+                                session.tool_count += 1
+                                # Track tool name + input summary for /status
+                                input_summary = ""
+                                if hasattr(block, "input") and block.input:
+                                    input_summary = str(block.input)
+                                    if len(input_summary) > 80:
+                                        input_summary = input_summary[:80] + "..."
+                                session.recent_tools.append({"name": block.name, "input": input_summary})
+                                if len(session.recent_tools) > 5:
+                                    session.recent_tools = session.recent_tools[-5:]
                                 print(f"\n[Tool: {block.name}]", flush=True)
                                 if hasattr(block, "input"):
                                     input_str = str(block.input)
@@ -611,6 +683,9 @@ class FeishuBotServer:
                         if result_session_id:
                             session.session_id = result_session_id
                         print(f"\n  [Result] turns={num_turns}, error={is_error}, session={session.session_id and session.session_id[:8]}...")
+
+                # Done working
+                session.working_since = None
 
                 print("\n" + "-" * 70)
 
@@ -673,7 +748,8 @@ class FeishuBotServer:
 
             model = schedule.task.model or self.default_model
             project_dir = Path(schedule.task.project_dir).resolve()
-            timeout = schedule.timeout_minutes or 15
+            default_timeout = self.config.get("defaults", {}).get("timeout_minutes", 30)
+            timeout = schedule.timeout_minutes or default_timeout
             max_turns = schedule.task.max_turns or 5
 
             if self._loop and self._loop.is_running():
@@ -699,7 +775,8 @@ class FeishuBotServer:
             model = schedule.task.model or self.default_model
             project_dir = Path(schedule.task.project_dir).resolve()
             max_iters = schedule.task.max_iterations or 10
-            timeout = schedule.timeout_minutes or 30
+            default_timeout = self.config.get("defaults", {}).get("timeout_minutes", 30)
+            timeout = schedule.timeout_minutes or default_timeout
 
             # Build template vars (same as daemon)
             today_str = datetime.now().strftime("%Y-%m-%d")
@@ -869,7 +946,9 @@ class FeishuBotServer:
             "/list  — List available schedules\n"
             "/run <name> — Run a schedule (inline or standard task)\n"
             "/new   — Reset conversation (start fresh)\n"
-            "/stop  — Stop and disconnect current session\n\n"
+            "/stop  — Stop and disconnect current session\n"
+            "/cancel — Interrupt current request (keep session)\n"
+            "/status — Check if agent is working and what it's doing\n\n"
             "Or just send a message to chat with Claude.\n"
             "Multi-turn conversation is supported — Claude remembers context.\n"
             "Each reply shows the current mode automatically."
@@ -1020,6 +1099,7 @@ class FeishuBotServer:
         try:
             await session.client.set_permission_mode(sdk_mode)
             session.permission_mode = sdk_mode
+            self._chat_modes[chat_id] = sdk_mode
             self._send_message(chat_id, f"Mode switched to: {display_name} ({sdk_mode})")
         except Exception as e:
             self._send_message(chat_id, f"Failed to switch mode: {e}")
@@ -1147,8 +1227,9 @@ class FeishuBotServer:
         """
         Scan Claude Code CLI session files for a given project.
 
-        Reads sessions-index.json (CLI's authoritative metadata) first,
-        falls back to scanning .jsonl files directly if index is unavailable.
+        Always scans .jsonl files on disk for real-time accuracy.
+        Uses sessions-index.json as metadata enrichment (summary, timestamps)
+        when available, but never relies on it as the sole source of truth.
         """
         encoded_dir = str(project_dir.resolve()).replace("/", "-")
         sessions_path = CLAUDE_SESSIONS_DIR / encoded_dir
@@ -1158,110 +1239,115 @@ class FeishuBotServer:
         exclude_ids = exclude_ids or set()
         results = []
 
-        # Try sessions-index.json first (CLI's authoritative metadata)
+        # Load sessions-index.json as metadata enrichment (not sole source)
+        index_lookup: dict[str, dict] = {}
         index_file = sessions_path / "sessions-index.json"
         if index_file.exists():
             try:
                 with open(index_file) as f:
                     index_data = json.load(f)
-
-                # sessions-index.json is { "version": N, "entries": [...] }
                 entries = index_data.get("entries", []) if isinstance(index_data, dict) else index_data
-
                 for entry in entries:
-                    session_id = entry.get("sessionId", "")
-                    if session_id in exclude_ids:
-                        continue
-                    # Only include if the jsonl file actually exists
-                    jsonl_path = sessions_path / f"{session_id}.jsonl"
-                    if not jsonl_path.exists():
-                        continue
-
-                    summary = entry.get("summary") or entry.get("firstPrompt", "")[:30] or "(no message)"
-                    modified = entry.get("modified", "")
-                    created = entry.get("created", "")
-                    project_alias = self._get_project_alias(project_dir)
-
-                    results.append({
-                        "session_id": session_id,
-                        "summary": summary[:50],
-                        "permission_mode": "default",
-                        "project_alias": project_alias,
-                        "project_dir": str(project_dir),
-                        "created_at": created,
-                        "last_active": modified or created,
-                        "source": "cli",
-                    })
-
-                results.sort(key=lambda x: x["last_active"], reverse=True)
-                return results
+                    sid = entry.get("sessionId", "")
+                    if sid:
+                        index_lookup[sid] = entry
             except (json.JSONDecodeError, IOError, KeyError):
-                pass  # Fall through to legacy scan
+                pass
 
-        # Fallback: scan .jsonl files directly (legacy behavior)
+        # Always scan .jsonl files on disk (source of truth)
+        project_alias = self._get_project_alias(project_dir)
         for jsonl_file in sessions_path.glob("*.jsonl"):
             session_id = jsonl_file.stem
             if session_id in exclude_ids:
                 continue
 
-            mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime)
+            index_entry = index_lookup.get(session_id)
 
-            summary = ""
+            # Always use file mtime for sorting accuracy
+            mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime)
+            last_active = mtime.isoformat()
+            if index_entry:
+                created = index_entry.get("created", last_active)
+            else:
+                created = last_active
+
+            # Extract customTitle, permissionMode, and first user message from .jsonl
+            custom_title = ""
+            first_prompt = ""
+            permission_mode = ""
             try:
                 with open(jsonl_file) as f:
                     for line in f:
                         obj = json.loads(line)
-                        if obj.get("type") == "user":
+                        if obj.get("type") == "custom-title" and not custom_title:
+                            custom_title = obj.get("customTitle", "")
+                        if obj.get("type") == "user" and not first_prompt:
+                            permission_mode = obj.get("permissionMode", "")
                             content = obj.get("message", {}).get("content", [])
                             for block in content:
                                 if isinstance(block, dict) and block.get("type") == "text":
                                     text = block["text"].strip()
                                     if not text.startswith("<"):
-                                        summary = text[:30]
+                                        first_prompt = text[:30]
                                         break
+                        if custom_title and first_prompt:
                             break
             except (json.JSONDecodeError, IOError, KeyError, AttributeError, TypeError):
                 pass
 
+            # Summary priority: customTitle > index summary > first_prompt > fallback
+            summary = custom_title
+            if not summary and index_entry:
+                summary = index_entry.get("summary") or index_entry.get("firstPrompt", "")[:30] or ""
             if not summary:
-                summary = "(no message)"
+                summary = first_prompt
+            if not summary:
+                continue
 
-            project_alias = self._get_project_alias(project_dir)
             results.append({
                 "session_id": session_id,
-                "summary": summary,
-                "permission_mode": "default",
+                "summary": summary[:50],
+                "permission_mode": permission_mode or "acceptEdits",
                 "project_alias": project_alias,
                 "project_dir": str(project_dir),
-                "created_at": mtime.isoformat(),
-                "last_active": mtime.isoformat(),
+                "created_at": created,
+                "last_active": last_active,
                 "source": "cli",
             })
 
         results.sort(key=lambda x: x["last_active"], reverse=True)
         return results
 
+    def _read_last_assistant_response(self, session_id: str, project_dir: Path) -> str:
+        """Read the last assistant text response from a session's .jsonl file."""
+        encoded_dir = str(project_dir.resolve()).replace("/", "-")
+        jsonl_path = CLAUDE_SESSIONS_DIR / encoded_dir / f"{session_id}.jsonl"
+        if not jsonl_path.exists():
+            return ""
+
+        last_text = ""
+        try:
+            with open(jsonl_path) as f:
+                for line in f:
+                    obj = json.loads(line)
+                    if obj.get("type") == "assistant":
+                        content = obj.get("message", {}).get("content", [])
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                last_text = block["text"]
+                                break
+        except (json.JSONDecodeError, IOError, KeyError, AttributeError, TypeError):
+            pass
+
+        # Truncate to avoid oversized messages
+        if len(last_text) > 2000:
+            last_text = last_text[:2000] + "\n\n... (truncated)"
+        return last_text
+
     def _get_merged_sessions(self, chat_id: str) -> list:
-        """Get merged session list: bot sessions (current project) + CLI sessions, deduped and sorted."""
+        """Get session list from CLI session files for the current project."""
         current_project_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
-        current_project_str = str(current_project_dir.resolve())
-
-        # 1. Get bot sessions filtered by current project
-        all_bot_sessions = self._get_chat_history(chat_id)
-        bot_sessions = [
-            {**entry, "source": entry.get("source", "bot")}
-            for entry in all_bot_sessions
-            if str(Path(entry.get("project_dir", "")).resolve()) == current_project_str
-        ]
-        bot_session_ids = {e["session_id"] for e in bot_sessions}
-
-        # 2. Get CLI sessions, excluding those already in bot history
-        cli_sessions = self._scan_cli_sessions(current_project_dir, exclude_ids=bot_session_ids)
-
-        # 3. Merge and sort by last_active descending
-        merged = bot_sessions + cli_sessions
-        merged.sort(key=lambda x: x.get("last_active", ""), reverse=True)
-        return merged[:10]
+        return self._scan_cli_sessions(current_project_dir)[:10]
 
     def _handle_resume(self, arg: str | None, chat_id: str, message_id: str):
         """Handle /resume command: list history or resume a session."""
@@ -1286,9 +1372,7 @@ class FeishuBotServer:
                 except (ValueError, TypeError):
                     time_str = "?"
                 summary = entry.get("summary", "?")
-                source = entry.get("source", "bot")
-                source_tag = "cli" if source == "cli" else "bot"
-                lines.append(f'{i}. [{time_str}] "{summary}" [{source_tag}]')
+                lines.append(f'{i}. [{time_str}] "{summary}"')
             lines.append("\nUsage: /resume <number>")
             self._reply_text(message_id, "\n".join(lines))
             return
@@ -1339,10 +1423,12 @@ class FeishuBotServer:
             await self._close_session(chat_id)
 
             model = entry.get("model", self.default_model)
-            print(f"  [Session] Resuming session {session_id[:8]}... for chat {chat_id[:8]}... (project: {project_dir}, model: {model})")
+            mode = entry.get("permission_mode", "acceptEdits")
+            print(f"  [Session] Resuming session {session_id[:8]}... for chat {chat_id[:8]}... (project: {project_dir}, model: {model}, mode: {mode})")
             client = create_client(
                 project_dir=project_dir,
                 model=model,
+                permission_mode=mode,
                 resume=session_id,
             )
 
@@ -1351,17 +1437,23 @@ class FeishuBotServer:
             session.model = model
             session.project_alias = project_alias
             session.first_message = entry.get("summary")
-            session.permission_mode = entry.get("permission_mode", "default")
+            session.permission_mode = mode
+            self._chat_modes[chat_id] = mode
             await session.connect()
             self._sessions[chat_id] = session
 
             mode_display = MODE_DISPLAY.get(session.permission_mode, session.permission_mode)
             summary = entry.get("summary", "?")
-            self._send_message(
-                chat_id,
-                f'Session resumed: "{summary}" ({project_alias or "?"} | {mode_display})\n\n'
-                "You can continue the conversation now.",
-            )
+
+            # Read last assistant response from .jsonl
+            last_response = self._read_last_assistant_response(session_id, project_dir)
+
+            resume_msg = f'**Session resumed:** "{summary}" ({project_alias or "?"} | {mode_display})'
+            if last_response:
+                resume_msg += f"\n\n---\n\n**Last response:**\n\n{last_response}"
+            resume_msg += "\n\n---\n*You can continue the conversation now.*"
+
+            self._send_message(chat_id, resume_msg)
 
         except Exception as e:
             print(f"  [Error] Failed to resume session: {e}")

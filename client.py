@@ -145,10 +145,11 @@ def create_client(
     # Create comprehensive security settings
     # Note: Using relative paths ("./**") restricts access to project directory
     # since cwd is set to project_dir
+    effective_mode = permission_mode or "acceptEdits"
     security_settings = {
         "sandbox": {"enabled": False},
         "permissions": {
-            "defaultMode": "acceptEdits",  # Auto-approve edits within allowed directories
+            "defaultMode": effective_mode,
             "allow": [
                 # Allow all file operations within the project directory
                 "Read(./**)",
