@@ -52,8 +52,8 @@ from claude_agent_sdk import ClaudeSDKClient
 from .schedule_loader import load_all_schedules, resolve_env_vars
 
 
-# Session timeout: auto-disconnect after 30 minutes of inactivity
-SESSION_TIMEOUT_SECONDS = 6 * 60 * 60
+# Session timeout: auto-disconnect after prolonged inactivity (only resets on restart)
+SESSION_TIMEOUT_SECONDS = 50 * 60 * 60
 
 # Mode aliases: user-friendly names → SDK permission_mode values
 MODE_ALIASES = {

@@ -89,7 +89,9 @@ BASE_ALLOWED_COMMANDS = {
     "gem",
     "fastlane",
     "sentry-cli",
-    "date"
+    "date",
+    "gradlew",
+    "gradle"
 }
 
 # Task-specific allowed commands (set at runtime)
