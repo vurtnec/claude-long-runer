@@ -15,7 +15,6 @@ Claude Long-Runner is a Python framework built on the Claude Agent SDK for execu
 ```
 claude-long-runner/
 ├── long_run_executor.py      # Main orchestrator: task loop, state mgmt, success checking
-├── agent.py                  # Agent session executor (async context management)
 ├── client.py                 # Claude SDK client factory with MCP server integration
 ├── task_config.py            # Task configuration loader from task.json
 ├── state_manager.py          # JSON-based state persistence and tracking
@@ -23,6 +22,8 @@ claude-long-runner/
 ├── security.py               # Command allowlisting and validation hooks
 │
 ├── scheduler/
+│   ├── __init__.py
+│   ├── __main__.py           # Entry point for `python -m scheduler`
 │   ├── daemon.py             # Main scheduler loop, trigger evaluation, task dispatch
 │   ├── feishu_bot.py         # Feishu bot server (WebSocket, per-chat sessions)
 │   ├── schedule_loader.py    # YAML schedule parsing and validation
@@ -30,12 +31,19 @@ claude-long-runner/
 │   ├── trigger_engine.py     # Trigger evaluation logic (cron, file, http, composite)
 │   ├── inline_executor.py    # Inline task execution (simple prompt-based)
 │   ├── execution_log.py      # Execution history management
-│   └── notifiers/            # Notification channel implementations
-│       ├── feishu.py
-│       ├── wechat.py
-│       ├── dingtalk.py
-│       ├── email_notifier.py
-│       └── webhook.py
+│   ├── notifiers/            # Notification channel implementations
+│   │   ├── base.py           # Abstract base notifier
+│   │   ├── feishu_notifier.py
+│   │   ├── wechat_notifier.py
+│   │   ├── dingtalk_notifier.py
+│   │   ├── email_notifier.py
+│   │   └── webhook_notifier.py
+│   └── triggers/             # Trigger implementations
+│       ├── base.py           # Abstract base trigger
+│       ├── cron_trigger.py
+│       ├── file_trigger.py
+│       ├── http_trigger.py
+│       └── composite_trigger.py
 │
 ├── schedules/                # Schedule YAML definitions
 │   └── _examples/            # Example schedules
@@ -46,13 +54,12 @@ claude-long-runner/
 │   │   ├── init_prompt.md
 │   │   ├── iter_prompt.md
 │   │   └── processor.py
-│   ├── feature_story/        # Step-by-step feature template
-│   │   ├── task.json
-│   │   ├── init_prompt.md
-│   │   ├── iter_prompt.md
-│   │   ├── processor.py
-│   │   └── spec.yaml
-│   └── template/             # Blank template for custom tasks
+│   └── feature_story/        # Step-by-step feature template
+│       ├── task.json
+│       ├── init_prompt.md
+│       ├── iter_prompt.md
+│       ├── processor.py
+│       └── spec.yaml
 │
 ├── skills/
 │   └── long-runner-acceptance-test/
@@ -71,17 +78,10 @@ Main orchestrator. Runs the task loop:
 1. Load task config from `task.json`
 2. Initialize or resume state from `state_manager`
 3. Render `init_prompt.md` (first iteration) or `iter_prompt.md` (subsequent)
-4. Send prompt to Claude via `agent.py`
+4. Send prompt to Claude via `client.py`
 5. Run `processor.py` to parse response and update state
 6. Check success conditions via `success_checker.py`
 7. Repeat until success or max iterations
-
-### agent.py
-
-Async context manager wrapping the Claude Agent SDK. Manages:
-- Session creation and cleanup
-- Tool execution with security hooks
-- Model selection and MCP server configuration
 
 ### client.py
 
@@ -273,15 +273,15 @@ Available in schedule YAML and notification templates:
 
 ### Notification Channels
 
-| Channel | Type Key | Required Env Vars |
-|---------|----------|-------------------|
-| Feishu (webhook) | `feishu` | `FEISHU_WEBHOOK_URL` |
-| Feishu (app) | `feishu` | `FEISHU_APP_ID`, `FEISHU_APP_SECRET` |
-| WeChat (ServerChan) | `wechat` (channel: serverchan) | `SERVERCHAN_KEY` |
-| WeChat (WxPusher) | `wechat` (channel: wxpusher) | `WXPUSHER_TOKEN`, `WXPUSHER_UID` |
-| DingTalk | `dingtalk` | `DINGTALK_WEBHOOK_URL` |
-| Email | `email` | `SMTP_USER`, `SMTP_PASSWORD` |
-| Generic Webhook | `webhook` | `url` in notification config |
+| Channel | Type Key | Required Env Vars | Status |
+|---------|----------|-------------------|--------|
+| Feishu (webhook) | `feishu` | `FEISHU_WEBHOOK_URL` | ✅ Tested |
+| Feishu (app) | `feishu` | `FEISHU_APP_ID`, `FEISHU_APP_SECRET` | ✅ Tested |
+| WeChat (ServerChan) | `wechat` (channel: serverchan) | `SERVERCHAN_KEY` | Experimental |
+| WeChat (WxPusher) | `wechat` (channel: wxpusher) | `WXPUSHER_TOKEN`, `WXPUSHER_UID` | Experimental |
+| DingTalk | `dingtalk` | `DINGTALK_WEBHOOK_URL` | Experimental |
+| Email | `email` | `SMTP_USER`, `SMTP_PASSWORD` | Experimental |
+| Generic Webhook | `webhook` | `url` in notification config | Experimental |
 
 ## Feishu Bot Architecture
 
@@ -291,7 +291,7 @@ WebSocket-based bot using `lark-oapi` SDK. Key design:
 
 - **Per-chat sessions**: Each group chat maintains independent Claude session
 - **Session persistence**: Recent sessions stored at `~/.claude-long-runner/feishu_sessions.json` (up to 10 per chat)
-- **Session timeout**: Auto-disconnect after 6 hours of inactivity
+- **Session timeout**: Auto-disconnect after 50 hours of inactivity
 - **Project switching**: `/project <alias>` changes working directory for the session
 
 ### Permission Modes
@@ -350,10 +350,11 @@ Supported browser tools:
 ## Dependencies
 
 ```
-claude-agent-sdk>=0.1.19
+claude-agent-sdk>=0.1.47
 pyyaml>=6.0
 croniter>=2.0.0
 lark-oapi>=1.4.0
+python-dotenv>=1.0.0
 ```
 
 ## Key Design Decisions

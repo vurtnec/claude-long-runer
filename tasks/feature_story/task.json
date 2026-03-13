@@ -2,7 +2,6 @@
   "name": "feature_story",
   "description": "Feature Story template - step-by-step implementation based on project specification",
   "state_file": "feature_story_state.json",
-  "spec_file": "spec.yaml",
   "browser_tool": "playwright",
   "allowed_commands": ["sqlite3"],
   "initial_state": {

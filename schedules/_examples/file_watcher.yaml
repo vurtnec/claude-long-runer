@@ -1,10 +1,10 @@
-# 示例：文件变更触发
-# ==================
-# 当数据文件更新后，自动重新运行分析任务。
-# 使用前请将此文件复制到 schedules/ 目录并修改配置。
+# Example: File change trigger
+# =============================
+# Automatically re-runs analysis when data files are updated.
+# To use, copy this file to the schedules/ directory and modify the configuration.
 
 name: data_refresh
-description: "数据文件更新后自动重新分析"
+description: "Automatically re-analyze when data files are updated"
 enabled: true
 
 trigger:
@@ -12,7 +12,7 @@ trigger:
   paths:
     - "/data/exports/daily_export.csv"
     - "/data/exports/weekly_export.csv"
-  debounce_seconds: 60            # 文件变更后等待60秒再触发（避免频繁触发）
+  debounce_seconds: 60            # Wait 60 seconds after file change before triggering (to avoid rapid re-triggers)
 
 task:
   name: data_analysis
@@ -26,13 +26,13 @@ notifications:
   on_success:
     - type: wechat
       channel: serverchan
-      title: "数据分析更新"
+      title: "Data Analysis Updated"
       body: |
-        文件 {{trigger.changed_file}} 已更新，分析完成。
-        耗时: {{duration}}
+        File {{trigger.changed_file}} has been updated; analysis complete.
+        Duration: {{duration}}
 
   on_failure:
     - type: wechat
       channel: serverchan
-      title: "数据分析失败"
-      body: "文件 {{trigger.changed_file}} 更新后分析失败: {{error}}"
+      title: "Data Analysis Failed"
+      body: "Analysis failed after file {{trigger.changed_file}} was updated: {{error}}"

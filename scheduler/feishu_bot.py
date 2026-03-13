@@ -1,24 +1,24 @@
 """
-Feishu Bot Server (飞书应用机器人)
-==================================
+Feishu Bot Server
+==================
 
-通过飞书开放平台的 WebSocket 长连接模式接收群消息，
-使用 ClaudeSDKClient 的多轮对话能力保持上下文，
-并将结果回复到群聊。
+Receives group messages via the Feishu Open Platform WebSocket long-connection mode,
+uses ClaudeSDKClient's multi-turn conversation capability to maintain context,
+and replies results back to the group chat.
 
-每个群聊（chat_id）维护一个长驻的 ClaudeSDKClient，
-效果等同于在 Claude Code CLI 中持续对话。
+Each group chat (chat_id) maintains a persistent ClaudeSDKClient,
+equivalent to an ongoing conversation in the Claude Code CLI.
 
-前置条件：
-1. 在 open.feishu.cn 创建企业自建应用，启用机器人能力
-2. 添加权限：im:message
-3. 事件订阅选「长连接」模式，添加 im.message.receive_v1
-4. 创建版本并发布，将机器人添加到群聊
-5. 在 scheduler_config.yaml 中配置 app_id 和 app_secret
+Prerequisites:
+1. Create an enterprise app at open.feishu.cn and enable bot capabilities
+2. Add permission: im:message
+3. For event subscriptions, choose "Long Connection" mode and add im.message.receive_v1
+4. Create a version, publish it, and add the bot to a group chat
+5. Configure app_id and app_secret in scheduler_config.yaml
 
-用法：
-    python -m scheduler.feishu_bot                     # 独立运行
-    python -m scheduler.feishu_bot --config config.yaml # 指定配置
+Usage:
+    python -m scheduler.feishu_bot                     # Run standalone
+    python -m scheduler.feishu_bot --config config.yaml # Specify config
 """
 
 import argparse
@@ -83,10 +83,10 @@ CLAUDE_SESSIONS_DIR = Path.home() / ".claude" / "projects"
 
 class ChatSession:
     """
-    管理单个群聊的 Claude 会话。
+    Manages a single group chat's Claude session.
 
-    每个 chat_id 对应一个 ChatSession，内部维护一个长驻的 ClaudeSDKClient。
-    通过 asyncio.Lock 确保同一群聊的消息串行处理。
+    Each chat_id maps to one ChatSession, which internally maintains a persistent ClaudeSDKClient.
+    An asyncio.Lock ensures messages within the same chat are processed serially.
     """
 
     def __init__(self, chat_id: str, client: ClaudeSDKClient, project_dir: Path):
@@ -138,12 +138,12 @@ class ChatSession:
 
 class FeishuBotServer:
     """
-    飞书应用机器人服务。
+    Feishu app bot server.
 
-    通过 WebSocket 长连接接收群消息，支持多轮对话：
-    - 每个群聊维护一个长驻 ClaudeSDKClient（per-chat session）
-    - 用户发的每条消息追加到同一个对话，Claude 保持完整上下文
-    - 支持 /new（重置对话）、/stop（停止会话）、/run（触发 schedule）等命令
+    Receives group messages via WebSocket long connection, supporting multi-turn conversations:
+    - Each group chat maintains a persistent ClaudeSDKClient (per-chat session)
+    - Each user message is appended to the same conversation; Claude retains full context
+    - Supports /new (reset conversation), /stop (stop session), /run (trigger schedule), etc.
     """
 
     def __init__(self, config: dict, base_dir: Path = None):
@@ -341,7 +341,7 @@ class FeishuBotServer:
             content = json.loads(message.content)
             raw_text = content.get("text", "").strip()
 
-            # Remove @mention prefix (飞书会在文本前加 @bot_name)
+            # Remove @mention prefix (Feishu prepends @bot_name to the text)
             text = raw_text
             if hasattr(message, "mentions") and message.mentions:
                 for mention in message.mentions:

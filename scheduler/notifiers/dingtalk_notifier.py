@@ -1,16 +1,16 @@
 """
-DingTalk (钉钉) Push Notification
-===================================
+DingTalk Push Notification
+===========================
 
-通过钉钉自定义机器人 Webhook 发送消息到群聊。
+Sends messages to a DingTalk group chat via a custom bot webhook.
 
-设置步骤：
-1. 打开钉钉群 → 设置 → 智能群助手 → 添加机器人 → 自定义
-2. 安全设置选「自定义关键词」，填入一个关键词（如「通知」）
-3. 复制 Webhook URL (格式: https://oapi.dingtalk.com/robot/send?access_token=xxx)
-4. 配置到 scheduler_config.yaml 或 schedule YAML 中
+Setup steps:
+1. Open DingTalk group > Settings > Smart Group Assistant > Add Bot > Custom
+2. For security settings, choose "Custom Keywords" and enter a keyword (e.g. "notification")
+3. Copy the Webhook URL (format: https://oapi.dingtalk.com/robot/send?access_token=xxx)
+4. Configure it in scheduler_config.yaml or the schedule YAML file
 
-文档：https://open.dingtalk.com/document/orgapp/custom-robot-access
+Docs: https://open.dingtalk.com/document/orgapp/custom-robot-access
 """
 
 import asyncio
@@ -21,7 +21,7 @@ from .base import BaseNotifier
 
 
 class DingTalkNotifier(BaseNotifier):
-    """Send notifications to DingTalk (钉钉) group via custom bot webhook."""
+    """Send notifications to DingTalk group via custom bot webhook."""
 
     async def send(self, settings: Dict[str, Any], context: Dict[str, Any]) -> bool:
         dingtalk_config = self.global_config.get("dingtalk", {})

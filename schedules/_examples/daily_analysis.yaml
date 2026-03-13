@@ -1,19 +1,19 @@
-# 示例：每日定时分析任务 + 微信推送
-# =====================================
-# 每天早上8点自动运行分析任务，完成后推送到微信。
-# 使用前请将此文件复制到 schedules/ 目录并修改配置。
+# Example: Daily scheduled analysis task + WeChat push notification
+# ==================================================================
+# Automatically runs an analysis task every day at 8 AM, then pushes the result to WeChat.
+# To use, copy this file to the schedules/ directory and modify the configuration.
 
 name: daily_analysis
-description: "每天早上8点运行数据分析"
+description: "Run data analysis every day at 8 AM"
 enabled: true
 
 trigger:
   type: cron
-  cron: "0 8 * * *"              # 每天早上8:00
+  cron: "0 8 * * *"              # Every day at 8:00 AM
   timezone: "Asia/Shanghai"
 
 task:
-  name: data_analysis             # 对应 tasks/data_analysis/ 目录
+  name: data_analysis             # Corresponds to the tasks/data_analysis/ directory
   params:
     report_type: "daily"
     date: "{{today}}"
@@ -27,20 +27,20 @@ notifications:
   on_success:
     - type: wechat
       channel: serverchan
-      title: "分析完成 - {{date}}"
+      title: "Analysis Complete - {{date}}"
       body: |
-        任务: {{task_name}}
-        耗时: {{duration}}
-        迭代次数: {{iterations}}
+        Task: {{task_name}}
+        Duration: {{duration}}
+        Iterations: {{iterations}}
 
-        结果摘要:
+        Result summary:
         {{last_response}}
 
   on_failure:
     - type: wechat
       channel: serverchan
-      title: "任务失败: {{task_name}}"
-      body: "任务在 {{iterations}} 次迭代后失败。错误: {{error}}"
+      title: "Task Failed: {{task_name}}"
+      body: "Task failed after {{iterations}} iterations. Error: {{error}}"
 
 retry:
   max_retries: 1

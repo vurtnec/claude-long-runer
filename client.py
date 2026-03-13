@@ -12,7 +12,7 @@ from pathlib import Path
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from claude_agent_sdk.types import HookMatcher
 
-from security import bash_security_hook, make_bash_security_hook
+from security import make_bash_security_hook
 
 
 # Browser tool configurations

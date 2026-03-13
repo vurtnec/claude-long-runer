@@ -3,7 +3,7 @@ WeChat Push Notification
 ========================
 
 Supports two free services:
-- Server酱 (ServerChan): https://sct.ftqq.com/
+- ServerChan: https://sct.ftqq.com/
   Free tier: 5 messages/day. Register to get a SendKey.
 
 - WxPusher: https://wxpusher.zjiecode.com/
@@ -35,7 +35,7 @@ class WeChatNotifier(BaseNotifier):
 
     async def _send_serverchan(self, title: str, body: str) -> bool:
         """
-        Send via Server酱 (ServerChan).
+        Send via ServerChan.
 
         API: POST https://sctapi.ftqq.com/{SendKey}.send
         Params: title, desp (description, supports Markdown)

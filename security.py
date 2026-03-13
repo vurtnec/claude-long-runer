@@ -123,9 +123,6 @@ def get_allowed_commands() -> set[str]:
     return BASE_ALLOWED_COMMANDS | _task_allowed_commands
 
 
-# Backwards compatibility alias
-ALLOWED_COMMANDS = BASE_ALLOWED_COMMANDS
-
 # Commands that need additional validation even when in the allowlist
 COMMANDS_NEEDING_EXTRA_VALIDATION = {"pkill", "chmod", "init.sh"}
 
@@ -612,68 +609,3 @@ def make_bash_security_hook(restricted_project_dir: str | None = None):
 
     return _hook
 
-
-async def bash_security_hook(input_data, tool_use_id=None, context=None):
-    """
-    Pre-tool-use hook that validates bash commands using an allowlist.
-
-    Only commands in ALLOWED_COMMANDS are permitted.
-
-    Args:
-        input_data: Dict containing tool_name and tool_input
-        tool_use_id: Optional tool use ID
-        context: Optional context
-
-    Returns:
-        Empty dict to allow, or {"decision": "block", "reason": "..."} to block
-    """
-    if input_data.get("tool_name") != "Bash":
-        return {}
-
-    command = input_data.get("tool_input", {}).get("command", "")
-    if not command:
-        return {}
-
-    # Extract all commands from the command string
-    commands = extract_commands(command)
-
-    if not commands:
-        # Could not parse - fail safe by blocking
-        return {
-            "decision": "block",
-            "reason": f"Could not parse command for security validation: {command}",
-        }
-
-    # Split into segments for per-command validation
-    segments = split_command_segments(command)
-
-    # Check each command against the allowlist (base + task-specific)
-    allowed = get_allowed_commands()
-    for cmd in commands:
-        if cmd not in allowed:
-            return {
-                "decision": "block",
-                "reason": f"Command '{cmd}' is not in the allowed commands list",
-            }
-
-        # Additional validation for sensitive commands
-        if cmd in COMMANDS_NEEDING_EXTRA_VALIDATION:
-            # Find the specific segment containing this command
-            cmd_segment = get_command_for_validation(cmd, segments)
-            if not cmd_segment:
-                cmd_segment = command  # Fallback to full command
-
-            if cmd == "pkill":
-                allowed, reason = validate_pkill_command(cmd_segment)
-                if not allowed:
-                    return {"decision": "block", "reason": reason}
-            elif cmd == "chmod":
-                allowed, reason = validate_chmod_command(cmd_segment)
-                if not allowed:
-                    return {"decision": "block", "reason": reason}
-            elif cmd == "init.sh":
-                allowed, reason = validate_init_script(cmd_segment)
-                if not allowed:
-                    return {"decision": "block", "reason": reason}
-
-    return {}

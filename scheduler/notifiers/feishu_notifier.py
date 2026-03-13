@@ -1,15 +1,15 @@
 """
-Feishu (飞书) Push Notification
-================================
+Feishu Push Notification
+=========================
 
-通过飞书自定义机器人 Webhook 发送消息到群聊。
+Sends messages to a Feishu group chat via a custom bot webhook.
 
-设置步骤：
-1. 打开飞书群 → 设置 → 群机器人 → 添加机器人 → 自定义机器人
-2. 复制 Webhook URL (格式: https://open.feishu.cn/open-apis/bot/v2/hook/xxx)
-3. 配置到 scheduler_config.yaml 或 schedule YAML 中
+Setup steps:
+1. Open Feishu group > Settings > Group Bots > Add Bot > Custom Bot
+2. Copy the Webhook URL (format: https://open.feishu.cn/open-apis/bot/v2/hook/xxx)
+3. Configure it in scheduler_config.yaml or the schedule YAML file
 
-文档：https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot
+Docs: https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot
 """
 
 import asyncio
@@ -20,7 +20,7 @@ from .base import BaseNotifier
 
 
 class FeishuNotifier(BaseNotifier):
-    """Send notifications to Feishu (飞书) group via custom bot webhook."""
+    """Send notifications to Feishu group via custom bot webhook."""
 
     async def send(self, settings: Dict[str, Any], context: Dict[str, Any]) -> bool:
         # Webhook URL: per-notification or global config

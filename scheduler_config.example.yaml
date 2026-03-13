@@ -5,31 +5,30 @@
 daemon:
   poll_interval_seconds: 30       # How often to check triggers
   schedules_dir: "schedules"      # Directory containing schedule YAML files
-  log_file: "scheduler.log"
 
 # Notification service credentials
 notifications:
   wechat:
-    # Server酱 (ServerChan): https://sct.ftqq.com/
-    # 免费注册，每天5条免费推送到微信
+    # ServerChan: https://sct.ftqq.com/
+    # Free tier: 5 messages/day pushed to WeChat
     serverchan_key: "{{env.SERVERCHAN_KEY}}"
 
     # WxPusher: https://wxpusher.zjiecode.com/
-    # 完全免费，无限推送
+    # Completely free, unlimited pushes
     wxpusher_token: "{{env.WXPUSHER_TOKEN}}"
     wxpusher_uid: "{{env.WXPUSHER_UID}}"
 
   feishu:
-    # 飞书自定义机器人 (用于定时任务通知推送，单向)
+    # Feishu custom bot webhook (for scheduled task push notifications, one-way)
     webhook_url: "{{env.FEISHU_WEBHOOK_URL}}"
-    # 飞书应用机器人 (用于接收群消息触发任务，双向)
-    # 在 open.feishu.cn 创建企业自建应用，启用机器人能力
+    # Feishu app bot (for receiving group messages and triggering tasks, two-way)
+    # Create an enterprise app at open.feishu.cn and enable bot capabilities
     app_id: "{{env.FEISHU_APP_ID}}"
     app_secret: "{{env.FEISHU_APP_SECRET}}"
 
   dingtalk:
-    # 钉钉自定义机器人: 群设置 → 智能群助手 → 添加机器人 → 自定义
-    # 安全设置选「自定义关键词」，填入「通知」
+    # DingTalk custom bot: Group Settings > Smart Group Assistant > Add Bot > Custom
+    # For security settings, choose "Custom Keywords" and enter "notification"
     webhook_url: "{{env.DINGTALK_WEBHOOK_URL}}"
 
   email:
@@ -58,18 +57,18 @@ feishu_bot:
   max_turns: 10
   # allowed_user_ids: []            # Empty = allow all; add open_ids to restrict
 
-  # 项目列表：别名 → 配置。用 /project <alias> 切换
-  # 支持两种格式：
-  #   纯字符串（旧格式）: alias: "/path/to/project"
-  #   字典（新格式）:
+  # Project list: alias -> config. Use /project <alias> to switch.
+  # Two formats are supported:
+  #   Plain string (legacy): alias: "/path/to/project"
+  #   Dict (new format):
   #     alias:
   #       path: "/path/to/project"
-  #       restricted: true           # 限制 bash 命令只能访问项目目录内的路径
-  #       model: "claude-sonnet-4-5-20250929"  # 该项目默认 model（不设则继承全局）
+  #       restricted: true           # Restrict bash commands to paths within the project directory
+  #       model: "claude-sonnet-4-5-20250929"  # Default model for this project (inherits global if unset)
   projects:
     my-project:
       path: "/path/to/your/project"
-      restricted: true               # 开启目录限制
+      restricted: true               # Enable directory restriction
       model: "claude-sonnet-4-5-20250929"
-    another: "/path/to/another/project"   # 旧格式，不限制，继承全局 model
-  default_project: "my-project"     # 默认项目别名
+    another: "/path/to/another/project"   # Legacy format, no restriction, inherits global model
+  default_project: "my-project"     # Default project alias

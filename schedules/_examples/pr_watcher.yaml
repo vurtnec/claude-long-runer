@@ -1,10 +1,10 @@
-# 示例：PR 监控（组合触发器）
-# ==============================
-# 工作时间内每30分钟检查是否有新 PR，有则自动 review。
-# 使用前请将此文件复制到 schedules/ 目录并修改配置。
+# Example: PR monitoring (composite trigger)
+# =============================================
+# Checks for new PRs every 30 minutes during work hours; auto-reviews if found.
+# To use, copy this file to the schedules/ directory and modify the configuration.
 
 name: pr_review_auto
-description: "工作时间内每30分钟检查新PR并自动review"
+description: "Check for new PRs every 30 minutes during work hours and auto-review"
 enabled: true
 
 trigger:
@@ -12,7 +12,7 @@ trigger:
   operator: and
   triggers:
     - type: cron
-      cron: "*/30 9-18 * * 1-5"  # 工作日 9:00-18:00 每30分钟
+      cron: "*/30 9-18 * * 1-5"  # Weekdays 9:00-18:00, every 30 minutes
     - type: http_condition
       url: "https://api.github.com/repos/OWNER/REPO/pulls?state=open"
       headers:
@@ -32,8 +32,8 @@ notifications:
   on_success:
     - type: wechat
       channel: serverchan
-      title: "PR Review 完成"
-      body: "PR review 已完成，耗时 {{duration}}"
+      title: "PR Review Complete"
+      body: "PR review completed in {{duration}}"
 
     - type: webhook
       url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
