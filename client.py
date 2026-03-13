@@ -12,7 +12,7 @@ from pathlib import Path
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from claude_agent_sdk.types import HookMatcher
 
-from security import bash_security_hook
+from security import bash_security_hook, make_bash_security_hook
 
 
 # Browser tool configurations
@@ -106,6 +106,7 @@ def create_client(
     max_turns: int = 1000,
     permission_mode: str | None = None,
     resume: str | None = None,
+    restricted: bool = False,
 ) -> ClaudeSDKClient:
     """
     Create a Claude Agent SDK client with multi-layered security.
@@ -118,6 +119,7 @@ def create_client(
         max_turns: Maximum conversation turns
         permission_mode: Permission mode ('default', 'acceptEdits', 'plan', 'bypassPermissions')
         resume: Session ID to resume a previous conversation
+        restricted: If True, bash commands are restricted to paths within project_dir
 
     Returns:
         Configured ClaudeSDKClient
@@ -127,6 +129,8 @@ def create_client(
     2. Permissions - File operations restricted to project_dir only
     3. Security hooks - Bash commands validated against an allowlist
        (see security.py for ALLOWED_COMMANDS)
+    4. Path restriction - When restricted=True, bash command arguments
+       cannot reference paths outside project_dir
     """
     # Get browser configuration
     browser_config = BROWSER_TOOLS.get(browser_tool, BROWSER_TOOLS["playwright"])
@@ -147,7 +151,7 @@ def create_client(
     # since cwd is set to project_dir
     effective_mode = permission_mode or "acceptEdits"
     security_settings = {
-        "sandbox": {"enabled": False},
+        "sandbox": {"enabled": restricted},
         "permissions": {
             "defaultMode": effective_mode,
             "allow": [
@@ -181,6 +185,8 @@ def create_client(
     print(f"   - Sandbox: {'enabled' if sandbox_enabled else 'disabled'}")
     print(f"   - Filesystem restricted to: {project_dir.resolve()}")
     print("   - Bash commands restricted to allowlist (see security.py)")
+    if restricted:
+        print(f"   - Path restriction: enabled (bash args must stay within project dir)")
     mcp_names = [browser_name] + list(project_mcp_servers.keys())
     print(f"   - MCP servers: {', '.join(mcp_names)}")
     print()
@@ -201,7 +207,14 @@ def create_client(
         },
         hooks={
             "PreToolUse": [
-                HookMatcher(matcher="Bash", hooks=[bash_security_hook]),
+                HookMatcher(
+                    matcher="Bash",
+                    hooks=[
+                        make_bash_security_hook(
+                            str(project_dir.resolve()) if restricted else None
+                        )
+                    ],
+                ),
             ],
         },
         max_turns=max_turns,

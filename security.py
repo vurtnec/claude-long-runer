@@ -391,6 +391,228 @@ def get_command_for_validation(cmd: str, segments: list[str]) -> str:
     return ""
 
 
+# Allowed system path prefixes — executable lookups at command position are OK
+ALLOWED_SYSTEM_PREFIXES = (
+    "/usr/bin/",
+    "/usr/local/bin/",
+    "/bin/",
+    "/usr/sbin/",
+    "/sbin/",
+    "/opt/homebrew/bin/",
+    "/opt/homebrew/sbin/",
+)
+
+# Paths that are always allowed (common shell targets)
+ALLOWED_SPECIAL_PATHS = {
+    "/dev/null",
+    "/dev/stdin",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/zero",
+    "/dev/urandom",
+    "/dev/random",
+}
+
+# Prefixes that are always allowed for arguments (not just commands)
+ALLOWED_ARG_PREFIXES = (
+    "/tmp/",
+    "/var/tmp/",
+    "/private/tmp/",  # macOS /tmp is a symlink to /private/tmp
+)
+
+
+def validate_path_restriction(
+    command_string: str, project_dir: str
+) -> tuple[bool, str]:
+    """
+    Validate that all path-like arguments in a bash command stay within project_dir.
+
+    Checks tokens that look like file paths (start with /, ./, ../, or contain ..)
+    and ensures they resolve to within the project directory.
+
+    Args:
+        command_string: The full shell command
+        project_dir: Absolute path to the allowed project directory
+
+    Returns:
+        Tuple of (is_allowed, reason_if_blocked)
+    """
+    try:
+        tokens = shlex.split(command_string)
+    except ValueError:
+        return False, "Could not parse command for path validation"
+
+    if not tokens:
+        return True, ""
+
+    # Normalize project_dir for prefix matching
+    project_dir_normalized = os.path.realpath(project_dir)
+    if not project_dir_normalized.endswith("/"):
+        project_dir_normalized += "/"
+
+    def _is_path_allowed(path_str: str, is_command_position: bool) -> tuple[bool, str]:
+        """Check if a single path is within allowed boundaries."""
+        # Special paths always allowed
+        if path_str in ALLOWED_SPECIAL_PATHS:
+            return True, ""
+
+        # /tmp and similar always allowed
+        for prefix in ALLOWED_ARG_PREFIXES:
+            if path_str.startswith(prefix) or path_str == prefix.rstrip("/"):
+                return True, ""
+
+        # System tool paths allowed only at command position
+        if is_command_position:
+            for prefix in ALLOWED_SYSTEM_PREFIXES:
+                if path_str.startswith(prefix):
+                    return True, ""
+
+        # Resolve the path: if absolute use as-is, if relative resolve against project_dir
+        if os.path.isabs(path_str):
+            resolved = os.path.realpath(path_str)
+        else:
+            resolved = os.path.realpath(os.path.join(project_dir, path_str))
+
+        # Check if resolved path is within project_dir or IS project_dir
+        if resolved == project_dir_normalized.rstrip("/"):
+            return True, ""
+        if resolved.startswith(project_dir_normalized):
+            return True, ""
+
+        return False, f"Path '{path_str}' (resolves to '{resolved}') is outside project directory '{project_dir}'"
+
+    # Parse tokens and check path-like arguments
+    expect_command = True
+    skip_next = False  # for redirect operators
+
+    for i, token in enumerate(tokens):
+        if skip_next:
+            skip_next = False
+            # This token is a redirect target — validate it as a path
+            if token.startswith("/") or token.startswith("./") or token.startswith("../") or ".." in token:
+                ok, reason = _is_path_allowed(token, is_command_position=False)
+                if not ok:
+                    return False, reason
+            continue
+
+        # Shell operators
+        if token in ("|", "||", "&&", "&", ";"):
+            expect_command = True
+            continue
+
+        # Redirect operators — next token is a file path
+        if token in (">", ">>", "<", "2>", "2>>", "&>", "&>>"):
+            skip_next = True
+            continue
+
+        # Handle combined redirect+path like >/path or >>/path
+        for redirect_op in (">>", ">", "2>>", "2>", "&>>", "&>"):
+            if token.startswith(redirect_op) and len(token) > len(redirect_op):
+                path_part = token[len(redirect_op):]
+                if path_part.startswith("/") or path_part.startswith("./") or path_part.startswith("../") or ".." in path_part:
+                    ok, reason = _is_path_allowed(path_part, is_command_position=False)
+                    if not ok:
+                        return False, reason
+                break
+
+        # Skip flags
+        if token.startswith("-"):
+            continue
+
+        # Skip variable assignments
+        if "=" in token and not token.startswith("="):
+            continue
+
+        # Check if this token looks like a path
+        is_path_like = (
+            token.startswith("/")
+            or token.startswith("./")
+            or token.startswith("../")
+            or ".." in token
+        )
+
+        if is_path_like:
+            ok, reason = _is_path_allowed(token, is_command_position=expect_command)
+            if not ok:
+                return False, reason
+
+        if expect_command:
+            expect_command = False
+
+    return True, ""
+
+
+def make_bash_security_hook(restricted_project_dir: str | None = None):
+    """
+    Factory that creates a bash security hook with optional path restriction.
+
+    When restricted_project_dir is set, bash commands are validated to ensure
+    all path arguments stay within the project directory. This is bound into
+    a closure so concurrent sessions with different restrictions don't conflict.
+
+    Args:
+        restricted_project_dir: Absolute path to restrict to, or None for no restriction
+
+    Returns:
+        An async hook function compatible with Claude Agent SDK PreToolUse hooks
+    """
+
+    async def _hook(input_data, tool_use_id=None, context=None):
+        if input_data.get("tool_name") != "Bash":
+            return {}
+
+        command = input_data.get("tool_input", {}).get("command", "")
+        if not command:
+            return {}
+
+        # Step 1: Command allowlist check
+        commands = extract_commands(command)
+        if not commands:
+            return {
+                "decision": "block",
+                "reason": f"Could not parse command for security validation: {command}",
+            }
+
+        segments = split_command_segments(command)
+        allowed = get_allowed_commands()
+
+        for cmd in commands:
+            if cmd not in allowed:
+                return {
+                    "decision": "block",
+                    "reason": f"Command '{cmd}' is not in the allowed commands list",
+                }
+
+            if cmd in COMMANDS_NEEDING_EXTRA_VALIDATION:
+                cmd_segment = get_command_for_validation(cmd, segments)
+                if not cmd_segment:
+                    cmd_segment = command
+
+                if cmd == "pkill":
+                    is_ok, reason = validate_pkill_command(cmd_segment)
+                    if not is_ok:
+                        return {"decision": "block", "reason": reason}
+                elif cmd == "chmod":
+                    is_ok, reason = validate_chmod_command(cmd_segment)
+                    if not is_ok:
+                        return {"decision": "block", "reason": reason}
+                elif cmd == "init.sh":
+                    is_ok, reason = validate_init_script(cmd_segment)
+                    if not is_ok:
+                        return {"decision": "block", "reason": reason}
+
+        # Step 2: Path restriction check (only when restricted)
+        if restricted_project_dir:
+            for segment in segments:
+                is_ok, reason = validate_path_restriction(segment, restricted_project_dir)
+                if not is_ok:
+                    return {"decision": "block", "reason": reason}
+
+        return {}
+
+    return _hook
+
+
 async def bash_security_hook(input_data, tool_use_id=None, context=None):
     """
     Pre-tool-use hook that validates bash commands using an allowlist.

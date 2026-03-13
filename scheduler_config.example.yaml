@@ -58,8 +58,18 @@ feishu_bot:
   max_turns: 10
   # allowed_user_ids: []            # Empty = allow all; add open_ids to restrict
 
-  # 项目列表：别名 → 绝对路径。用 /project <alias> 切换
+  # 项目列表：别名 → 配置。用 /project <alias> 切换
+  # 支持两种格式：
+  #   纯字符串（旧格式）: alias: "/path/to/project"
+  #   字典（新格式）:
+  #     alias:
+  #       path: "/path/to/project"
+  #       restricted: true           # 限制 bash 命令只能访问项目目录内的路径
+  #       model: "claude-sonnet-4-5-20250929"  # 该项目默认 model（不设则继承全局）
   projects:
-    my-project: "/path/to/your/project"
-    another: "/path/to/another/project"
+    my-project:
+      path: "/path/to/your/project"
+      restricted: true               # 开启目录限制
+      model: "claude-sonnet-4-5-20250929"
+    another: "/path/to/another/project"   # 旧格式，不限制，继承全局 model
   default_project: "my-project"     # 默认项目别名

@@ -167,10 +167,21 @@ class FeishuBotServer:
             "model",
             config.get("defaults", {}).get("model", "claude-sonnet-4-5-20250929"),
         )
-        # Projects: alias → absolute path
+        # Projects: alias → absolute path, with per-project settings
         self.projects: Dict[str, Path] = {}
-        for alias, path_str in bot_config.get("projects", {}).items():
-            self.projects[alias] = Path(path_str).resolve()
+        self._project_restricted: Dict[str, bool] = {}   # alias → restricted flag
+        self._project_models: Dict[str, str] = {}         # alias → default model
+        for alias, value in bot_config.get("projects", {}).items():
+            if isinstance(value, str):
+                # Legacy format: plain path string
+                self.projects[alias] = Path(value).resolve()
+            elif isinstance(value, dict):
+                # New format: dict with path, restricted, model
+                self.projects[alias] = Path(value["path"]).resolve()
+                if value.get("restricted"):
+                    self._project_restricted[alias] = True
+                if value.get("model"):
+                    self._project_models[alias] = value["model"]
 
         # Default project
         default_alias = bot_config.get("default_project", "")
@@ -244,8 +255,15 @@ class FeishuBotServer:
         if self.projects:
             print(f"  Projects:")
             for alias, path in self.projects.items():
-                default_mark = " (default)" if path == self.default_project_dir else ""
-                print(f"    {alias}: {path}{default_mark}")
+                tags = []
+                if path == self.default_project_dir:
+                    tags.append("default")
+                if self._project_restricted.get(alias):
+                    tags.append("restricted")
+                if alias in self._project_models:
+                    tags.append(f"model: {self._project_models[alias]}")
+                tag_str = f" ({', '.join(tags)})" if tags else ""
+                print(f"    {alias}: {path}{tag_str}")
         else:
             print(f"  Project dir: {self.default_project_dir}")
         print(f"  Session timeout: {SESSION_TIMEOUT_SECONDS // 60} minutes")
@@ -573,17 +591,29 @@ class FeishuBotServer:
             # Session exists but disconnected, remove and recreate
             del self._sessions[chat_id]
 
-        # Determine project dir, model, and mode for this chat
+        # Determine project dir, model, mode, and restriction for this chat
         project_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
-        model = self._chat_models.get(chat_id, self.default_model)
+        project_alias = self._get_project_alias(project_dir)
+
+        # Model priority: user /model override > per-project model > global default
+        if chat_id in self._chat_models:
+            model = self._chat_models[chat_id]
+        elif project_alias and project_alias in self._project_models:
+            model = self._project_models[project_alias]
+        else:
+            model = self.default_model
+
         mode = self._chat_modes.get(chat_id)
+        restricted = self._project_restricted.get(project_alias or "", False)
 
         # Create new session
-        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (project: {project_dir}, model: {model}, mode: {mode or 'default'})")
+        restriction_tag = " [RESTRICTED]" if restricted else ""
+        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (project: {project_dir}, model: {model}, mode: {mode or 'default'}{restriction_tag})")
         client = create_client(
             project_dir=project_dir,
             model=model,
             permission_mode=mode,
+            restricted=restricted,
         )
 
         session = ChatSession(chat_id=chat_id, client=client, project_dir=project_dir)
