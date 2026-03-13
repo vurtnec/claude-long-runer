@@ -103,6 +103,7 @@ class ChatSession:
         self.first_message: str | None = None
         self.project_alias: str | None = None
         self.model: str = "claude-opus-4-6"
+        self.custom_title: str | None = None
         # Progress tracking for /status command
         self.working_since: datetime | None = None  # set when agent starts processing
         self.tool_count: int = 0
@@ -372,6 +373,10 @@ class FeishuBotServer:
         elif command == "/model":
             arg = parts[1] if len(parts) >= 2 else None
             self._handle_model(arg, chat_id, message_id)
+        elif command == "/rename":
+            # Use split(None, 1) to keep the full title as a single string
+            title = text.split(None, 1)[1] if len(text.split(None, 1)) >= 2 else None
+            self._handle_rename(title, chat_id, message_id)
         elif command == "/resume":
             arg = parts[1] if len(parts) >= 2 else None
             self._handle_resume(arg, chat_id, message_id)
@@ -942,6 +947,7 @@ class FeishuBotServer:
             "/project — Show current project / switch project\n"
             "/mode [plan|auto|default] — Show or switch permission mode\n"
             "/model [opus|sonnet|haiku] — Show or switch model\n"
+            "/rename <title> — Rename current session\n"
             "/resume [number] — List recent sessions / resume by number\n"
             "/list  — List available schedules\n"
             "/run <name> — Run a schedule (inline or standard task)\n"
@@ -1104,6 +1110,70 @@ class FeishuBotServer:
         except Exception as e:
             self._send_message(chat_id, f"Failed to switch mode: {e}")
 
+    # ── Session rename ────────────────────────────────────────────────────
+
+    def _handle_rename(self, title: str | None, chat_id: str, message_id: str):
+        """Handle /rename command: rename the current session's custom title."""
+        session = self._sessions.get(chat_id)
+
+        if title is None:
+            # Show current title
+            if session and session.custom_title:
+                self._reply_text(message_id, f'Current title: "{session.custom_title}"')
+            elif session and session.first_message:
+                self._reply_text(message_id, f'No custom title. Auto-summary: "{session.first_message[:30]}"\n\nUsage: /rename <new title>')
+            else:
+                self._reply_text(message_id, "No active session.\nUsage: /rename <new title>")
+            return
+
+        if not session or not session.connected:
+            self._reply_text(message_id, "No active session. Start a conversation first, then rename.")
+            return
+
+        if not session.session_id:
+            self._reply_text(message_id, "Session not yet initialized. Send a message first, then rename.")
+            return
+
+        title = title.strip()
+        if not title:
+            self._reply_text(message_id, "Title cannot be empty.\nUsage: /rename <new title>")
+            return
+
+        # Rename asynchronously
+        if self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._rename_session(session, title, chat_id, message_id),
+                self._loop,
+            )
+        else:
+            self._reply_text(message_id, "Event loop not available.")
+
+    async def _rename_session(self, session: ChatSession, title: str, chat_id: str, message_id: str):
+        """Rename session: update in-memory, write to .jsonl, update history."""
+        try:
+            old_title = session.custom_title or session.first_message or "(untitled)"
+
+            # 1. Update in-memory
+            session.custom_title = title
+
+            # 2. Write custom-title record to .jsonl session file
+            encoded_dir = str(session.project_dir.resolve()).replace("/", "-")
+            jsonl_path = CLAUDE_SESSIONS_DIR / encoded_dir / f"{session.session_id}.jsonl"
+            if jsonl_path.exists():
+                record = json.dumps({"type": "custom-title", "customTitle": title})
+                with open(jsonl_path, "a") as f:
+                    f.write(record + "\n")
+
+            # 3. Update history entry in feishu_sessions.json
+            self._save_session_to_history(chat_id, session)
+
+            self._send_message(chat_id, f'Session renamed: "{old_title}" → "{title}"')
+
+        except Exception as e:
+            print(f"  [Error] Failed to rename session: {e}")
+            traceback.print_exc()
+            self._send_message(chat_id, f"Failed to rename: {e}")
+
     # ── Model switching ──────────────────────────────────────────────────
 
     def _handle_model(self, arg: str | None, chat_id: str, message_id: str):
@@ -1195,7 +1265,7 @@ class FeishuBotServer:
         if entry is None:
             entry = {
                 "session_id": session.session_id,
-                "summary": (session.first_message or "")[:30] or "(no message)",
+                "summary": session.custom_title or (session.first_message or "")[:30] or "(no message)",
                 "permission_mode": session.permission_mode,
                 "project_alias": session.project_alias or self._get_project_alias(session.project_dir),
                 "project_dir": str(session.project_dir),
@@ -1210,7 +1280,9 @@ class FeishuBotServer:
             entry["last_active"] = session.last_active.isoformat()
             entry["permission_mode"] = session.permission_mode
             entry["model"] = session.model
-            if session.first_message and entry.get("summary") == "(no message)":
+            if session.custom_title:
+                entry["summary"] = session.custom_title
+            elif session.first_message and entry.get("summary") == "(no message)":
                 entry["summary"] = session.first_message[:30]
 
         # Trim to max history size
@@ -1272,6 +1344,7 @@ class FeishuBotServer:
                 created = last_active
 
             # Extract customTitle, permissionMode, and first user message from .jsonl
+            # Note: custom_title always takes the LAST occurrence (user may rename multiple times)
             custom_title = ""
             first_prompt = ""
             permission_mode = ""
@@ -1279,19 +1352,24 @@ class FeishuBotServer:
                 with open(jsonl_file) as f:
                     for line in f:
                         obj = json.loads(line)
-                        if obj.get("type") == "custom-title" and not custom_title:
+                        if obj.get("type") == "custom-title":
                             custom_title = obj.get("customTitle", "")
                         if obj.get("type") == "user" and not first_prompt:
                             permission_mode = obj.get("permissionMode", "")
                             content = obj.get("message", {}).get("content", [])
+                            # Skip synthetic messages (e.g. "Tool loaded." after MCP init)
+                            has_tool_result = any(
+                                isinstance(b, dict) and b.get("type") == "tool_result"
+                                for b in content
+                            )
+                            if has_tool_result:
+                                continue
                             for block in content:
                                 if isinstance(block, dict) and block.get("type") == "text":
                                     text = block["text"].strip()
                                     if not text.startswith("<"):
                                         first_prompt = text[:30]
                                         break
-                        if custom_title and first_prompt:
-                            break
             except (json.JSONDecodeError, IOError, KeyError, AttributeError, TypeError):
                 pass
 
@@ -1307,6 +1385,7 @@ class FeishuBotServer:
             results.append({
                 "session_id": session_id,
                 "summary": summary[:50],
+                "custom_title": custom_title or None,
                 "permission_mode": permission_mode or "acceptEdits",
                 "project_alias": project_alias,
                 "project_dir": str(project_dir),
@@ -1436,6 +1515,7 @@ class FeishuBotServer:
             session.session_id = session_id
             session.model = model
             session.project_alias = project_alias
+            session.custom_title = entry.get("custom_title")
             session.first_message = entry.get("summary")
             session.permission_mode = mode
             self._chat_modes[chat_id] = mode

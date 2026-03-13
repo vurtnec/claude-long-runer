@@ -91,7 +91,8 @@ BASE_ALLOWED_COMMANDS = {
     "sentry-cli",
     "date",
     "gradlew",
-    "gradle"
+    "gradle",
+    "gcloud"
 }
 
 # Task-specific allowed commands (set at runtime)
