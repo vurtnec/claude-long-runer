@@ -1387,6 +1387,12 @@ class FeishuBotServer:
                         if obj.get("type") == "user" and not first_prompt:
                             permission_mode = obj.get("permissionMode", "")
                             content = obj.get("message", {}).get("content", [])
+                            # Handle string content (newer Claude Code CLI format)
+                            if isinstance(content, str):
+                                text = content.strip()
+                                if not text.startswith("<"):
+                                    first_prompt = text[:30]
+                                continue
                             # Skip synthetic messages (e.g. "Tool loaded." after MCP init)
                             has_tool_result = any(
                                 isinstance(b, dict) and b.get("type") == "tool_result"
