@@ -1,5 +1,6 @@
 # Python
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -36,6 +37,9 @@ claude-progress.txt
 *.swp
 *.swo
 *~
+
+# Claude Code
+.claude/
 
 # OS
 .DS_Store
