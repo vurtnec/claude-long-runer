@@ -25,7 +25,6 @@ async def run_inline_task(
     project_dir: Path,
     model: str = "claude-sonnet-4-5-20250929",
     max_turns: int = 3,
-    effort: str | None = None,
 ) -> Dict[str, Any]:
     """
     Execute an inline prompt task.
@@ -46,7 +45,7 @@ async def run_inline_task(
     turns_used = 0
 
     try:
-        client = create_client(project_dir, model, max_turns=max_turns, effort=effort)
+        client = create_client(project_dir, model, max_turns=max_turns)
 
         async with client:
             # Send the initial prompt

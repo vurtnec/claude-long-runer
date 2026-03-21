@@ -47,7 +47,6 @@ history:
 # Default values for all scheduled tasks (overridable per schedule)
 defaults:
   model: "claude-opus-4-6"
-  effort: "high"                    # Thinking depth: low, medium, high, max (omit to use CLI default)
   max_iterations: 10
   timeout_minutes: 120
 
@@ -55,7 +54,6 @@ defaults:
 feishu_bot:
   enabled: true                     # Start bot alongside daemon
   model: "claude-opus-4-6"
-  effort: "high"                    # Default effort for bot sessions (omit to use CLI default)
   max_turns: 10
   # allowed_user_ids: []            # Empty = allow all; add open_ids to restrict
 
@@ -72,6 +70,5 @@ feishu_bot:
       path: "/path/to/your/project"
       restricted: true               # Enable directory restriction
       model: "claude-sonnet-4-5-20250929"
-      effort: "high"                 # Per-project effort level
     another: "/path/to/another/project"   # Legacy format, no restriction, inherits global model
   default_project: "my-project"     # Default project alias

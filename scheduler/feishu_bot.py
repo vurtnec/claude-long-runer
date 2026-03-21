@@ -37,7 +37,6 @@ import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
-    GetMessageResourceRequest,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )
@@ -168,15 +167,10 @@ class FeishuBotServer:
             "model",
             config.get("defaults", {}).get("model", "claude-sonnet-4-5-20250929"),
         )
-        self.default_effort: str | None = bot_config.get(
-            "effort",
-            config.get("defaults", {}).get("effort"),
-        )
         # Projects: alias → absolute path, with per-project settings
         self.projects: Dict[str, Path] = {}
         self._project_restricted: Dict[str, bool] = {}   # alias → restricted flag
         self._project_models: Dict[str, str] = {}         # alias → default model
-        self._project_efforts: Dict[str, str] = {}        # alias → default effort
         for alias, value in bot_config.get("projects", {}).items():
             if isinstance(value, str):
                 # Legacy format: plain path string
@@ -188,8 +182,6 @@ class FeishuBotServer:
                     self._project_restricted[alias] = True
                 if value.get("model"):
                     self._project_models[alias] = value["model"]
-                if value.get("effort"):
-                    self._project_efforts[alias] = value["effort"]
 
         # Default project
         default_alias = bot_config.get("default_project", "")
@@ -224,11 +216,7 @@ class FeishuBotServer:
         self._sessions: Dict[str, ChatSession] = {}
         self._chat_project_dirs: Dict[str, Path] = {}  # chat_id → selected project_dir
         self._chat_models: Dict[str, str] = {}  # chat_id → model ID
-        self._chat_efforts: Dict[str, str] = {}  # chat_id → effort level
         self._chat_modes: Dict[str, str] = {}  # chat_id → permission mode
-
-        # Pending images: buffer images until user sends a text message
-        self._pending_images: Dict[str, List[str]] = {}  # chat_id → [image_file_paths]
 
         # Message dedup: Feishu may deliver the same event multiple times
         self._seen_message_ids: OrderedDict[str, float] = OrderedDict()
@@ -337,8 +325,8 @@ class FeishuBotServer:
             while len(self._seen_message_ids) > self._seen_max_size:
                 self._seen_message_ids.popitem(last=False)
 
-            # Only handle text and image messages
-            if message.message_type not in ("text", "image"):
+            # Only handle text messages
+            if message.message_type != "text":
                 return
 
             # Extract sender info
@@ -349,14 +337,7 @@ class FeishuBotServer:
                 print(f"  Ignoring message from non-whitelisted user: {sender_id}")
                 return
 
-            chat_id = message.chat_id
-
-            # Handle image messages: download, buffer, and wait for text
-            if message.message_type == "image":
-                self._handle_image_message(message, chat_id, message_id, sender_id)
-                return
-
-            # Parse text message content
+            # Parse message content
             content = json.loads(message.content)
             raw_text = content.get("text", "").strip()
 
@@ -369,6 +350,8 @@ class FeishuBotServer:
 
             if not text:
                 return
+
+            chat_id = message.chat_id
 
             print(f"\n[Feishu Bot] Received: \"{text}\" (from {sender_id}, chat {chat_id[:8]}...)")
 
@@ -408,9 +391,6 @@ class FeishuBotServer:
         elif command == "/model":
             arg = parts[1] if len(parts) >= 2 else None
             self._handle_model(arg, chat_id, message_id)
-        elif command == "/effort":
-            arg = parts[1] if len(parts) >= 2 else None
-            self._handle_effort(arg, chat_id, message_id)
         elif command == "/rename":
             # Use split(None, 1) to keep the full title as a single string
             title = text.split(None, 1)[1] if len(text.split(None, 1)) >= 2 else None
@@ -436,9 +416,6 @@ class FeishuBotServer:
         if session and session.session_id:
             # Archive current session to history before closing
             self._save_session_to_history(chat_id, session)
-
-        # Clear any buffered images
-        self._pending_images.pop(chat_id, None)
 
         if self._loop and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(
@@ -557,98 +534,8 @@ class FeishuBotServer:
             f"Switched to project: {alias}\n{new_dir}\n\nSession reset. Next message uses the new project context.",
         )
 
-    def _handle_image_message(self, message, chat_id: str, message_id: str, sender_id: str):
-        """Handle image message: download, save locally, and buffer for next text message."""
-        try:
-            content = json.loads(message.content)
-            image_key = content.get("image_key")
-            if not image_key:
-                print(f"  [Feishu Bot] Image message without image_key, skipping")
-                return
-
-            print(f"\n[Feishu Bot] Received image (from {sender_id}, chat {chat_id[:8]}...)")
-
-            # Download and save image
-            image_path = self._download_and_save_image(message_id, image_key)
-            if not image_path:
-                self._reply_text(message_id, "Failed to download image. Please try again.")
-                return
-
-            # Buffer the image path for this chat
-            if chat_id not in self._pending_images:
-                self._pending_images[chat_id] = []
-            self._pending_images[chat_id].append(image_path)
-
-            count = len(self._pending_images[chat_id])
-            if count == 1:
-                self._reply_text(message_id, "Image received. What would you like me to do with it?")
-            else:
-                self._reply_text(message_id, f"{count} images received. What would you like me to do with them?")
-
-            print(f"  [Feishu Bot] Image saved: {image_path} (pending: {count})")
-
-        except Exception as e:
-            print(f"[Feishu Bot] Error handling image message: {e}")
-            traceback.print_exc()
-            self._reply_text(message_id, "Failed to process image. Please try again.")
-
-    def _download_and_save_image(self, message_id: str, image_key: str) -> Optional[str]:
-        """Download image from Feishu message and save to tmp_images/ directory."""
-        try:
-            request = GetMessageResourceRequest.builder() \
-                .message_id(message_id) \
-                .file_key(image_key) \
-                .type("image") \
-                .build()
-
-            response = self.lark_client.im.v1.message_resource.get(request)
-
-            if not response.success():
-                print(f"  [Feishu Bot] Image download failed: {response.code} - {response.msg}")
-                return None
-
-            # Determine file extension from response filename or default to .png
-            file_name = getattr(response, "file_name", None) or ""
-            ext = Path(file_name).suffix if file_name else ".png"
-            if not ext:
-                ext = ".png"
-
-            # Save to tmp_images/ under project root
-            tmp_dir = self.base_dir / "tmp_images"
-            tmp_dir.mkdir(exist_ok=True)
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            short_id = message_id[-8:] if len(message_id) > 8 else message_id
-            save_path = tmp_dir / f"img_{timestamp}_{short_id}{ext}"
-
-            with open(save_path, "wb") as f:
-                f.write(response.file.read())
-
-            return str(save_path.resolve())
-
-        except Exception as e:
-            print(f"  [Feishu Bot] Error downloading image: {e}")
-            traceback.print_exc()
-            return None
-
     def _handle_free_prompt(self, text: str, chat_id: str, message_id: str):
         """Handle free-form prompt — send to persistent Claude session."""
-        # Merge pending images into the prompt if any
-        pending = self._pending_images.pop(chat_id, [])
-        if pending:
-            image_lines = []
-            for i, path in enumerate(pending, 1):
-                if len(pending) == 1:
-                    image_lines.append(f"The user sent an image, saved at: {path}")
-                else:
-                    image_lines.append(f"Image {i}: {path}")
-            image_context = "\n".join(image_lines)
-            text = (
-                f"{image_context}\n"
-                f"Use the Read tool to view the image(s) above.\n\n"
-                f"User message: {text}"
-            )
-
         # Send "processing" acknowledgment immediately
         self._reply_text(message_id, "Received. Processing...")
 
@@ -716,27 +603,17 @@ class FeishuBotServer:
         else:
             model = self.default_model
 
-        # Effort priority: user /effort override > per-project effort > global default
-        if chat_id in self._chat_efforts:
-            effort = self._chat_efforts[chat_id]
-        elif project_alias and project_alias in self._project_efforts:
-            effort = self._project_efforts[project_alias]
-        else:
-            effort = self.default_effort
-
         mode = self._chat_modes.get(chat_id)
         restricted = self._project_restricted.get(project_alias or "", False)
 
         # Create new session
         restriction_tag = " [RESTRICTED]" if restricted else ""
-        effort_tag = f", effort: {effort}" if effort else ""
-        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (project: {project_dir}, model: {model}, mode: {mode or 'default'}{effort_tag}{restriction_tag})")
+        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (project: {project_dir}, model: {model}, mode: {mode or 'default'}{restriction_tag})")
         client = create_client(
             project_dir=project_dir,
             model=model,
             permission_mode=mode,
             restricted=restricted,
-            effort=effort,
         )
 
         session = ChatSession(chat_id=chat_id, client=client, project_dir=project_dir)
@@ -1100,7 +977,6 @@ class FeishuBotServer:
             "/project — Show current project / switch project\n"
             "/mode [plan|auto|default] — Show or switch permission mode\n"
             "/model [opus|sonnet|haiku] — Show or switch model\n"
-            "/effort [low|medium|high|max] — Show or switch effort level\n"
             "/rename <title> — Rename current session\n"
             "/resume [number] — List recent sessions / resume by number\n"
             "/list  — List available schedules\n"
@@ -1373,49 +1249,6 @@ class FeishuBotServer:
             self._send_message(
                 chat_id,
                 f"Model set to: {arg} ({new_model})\nWill take effect on next session.",
-            )
-
-    # ── Effort switching ────────────────────────────────────────────────
-
-    EFFORT_LEVELS = {"low", "medium", "high", "max"}
-
-    def _handle_effort(self, arg: str | None, chat_id: str, message_id: str):
-        """Handle /effort command: show or switch effort level."""
-        session = self._sessions.get(chat_id)
-
-        if arg is None:
-            # Show current effort
-            current = self._chat_efforts.get(chat_id, self.default_effort)
-            display = current or "default (not set)"
-            self._reply_text(message_id, f"Current effort: {display}")
-            return
-
-        arg = arg.lower().strip()
-        if arg not in self.EFFORT_LEVELS:
-            self._reply_text(
-                message_id,
-                f"Unknown effort level: {arg}\nAvailable: low, medium, high, max",
-            )
-            return
-
-        self._chat_efforts[chat_id] = arg
-
-        # Effort is embedded in client — need to close and recreate session
-        if session and session.connected:
-            if session.session_id:
-                self._save_session_to_history(chat_id, session)
-            if self._loop and self._loop.is_running():
-                asyncio.run_coroutine_threadsafe(
-                    self._close_session(chat_id), self._loop
-                )
-            self._send_message(
-                chat_id,
-                f"Effort switched to: {arg}\nSession reset — send a message to start.",
-            )
-        else:
-            self._send_message(
-                chat_id,
-                f"Effort set to: {arg}\nWill take effect on next session.",
             )
 
     # ── Resume / session history ────────────────────────────────────────

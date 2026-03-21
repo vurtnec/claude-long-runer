@@ -54,7 +54,6 @@ class TaskRef:
     params: Dict[str, Any] = field(default_factory=dict)
     project_dir: str = "."
     model: Optional[str] = None
-    effort: Optional[str] = None
     max_iterations: Optional[int] = None
     # Inline task fields
     prompt: Optional[str] = None

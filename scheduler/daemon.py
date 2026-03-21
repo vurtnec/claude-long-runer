@@ -249,7 +249,6 @@ class SchedulerDaemon:
             schedule.task.model
             or self.defaults.get("model", "claude-sonnet-4-5-20250929")
         )
-        effort = schedule.task.effort or self.defaults.get("effort")
 
         success = False
         error_msg = None
@@ -265,7 +264,7 @@ class SchedulerDaemon:
                 if schedule.task.task_type == "inline":
                     # Inline task: direct prompt execution
                     result = await asyncio.wait_for(
-                        self._execute_inline(schedule, model, template_vars, effort=effort),
+                        self._execute_inline(schedule, model, template_vars),
                         timeout=timeout_minutes * 60,
                     )
                     success = result["success"]
@@ -276,7 +275,7 @@ class SchedulerDaemon:
                 else:
                     # Standard task: use existing run_long_task()
                     result = await asyncio.wait_for(
-                        self._execute_standard(schedule, model, resolved_params, effort=effort),
+                        self._execute_standard(schedule, model, resolved_params),
                         timeout=timeout_minutes * 60,
                     )
                     success = result["success"]
@@ -353,7 +352,6 @@ class SchedulerDaemon:
         schedule: ScheduleDefinition,
         model: str,
         resolved_params: Dict[str, Any],
-        effort: str | None = None,
     ) -> Dict[str, Any]:
         """Execute a standard task via run_long_task()."""
         max_iters = schedule.task.max_iterations or self.defaults.get(
@@ -364,7 +362,7 @@ class SchedulerDaemon:
 
         print(f"  Executing standard task: {schedule.task.name}")
         print(f"  Project dir: {project_dir}")
-        print(f"  Model: {model}, Max iterations: {max_iters}, Effort: {effort or 'default'}")
+        print(f"  Model: {model}, Max iterations: {max_iters}")
 
         success = await run_long_task(
             task_name=schedule.task.name,
@@ -373,7 +371,6 @@ class SchedulerDaemon:
             model=model,
             max_iterations=max_iters,
             resume=False,
-            effort=effort,
         )
 
         # Read state file for last_response
@@ -401,7 +398,6 @@ class SchedulerDaemon:
         schedule: ScheduleDefinition,
         model: str,
         template_vars: Dict[str, Any],
-        effort: str | None = None,
     ) -> Dict[str, Any]:
         """Execute an inline prompt task."""
         prompt = schedule.task.prompt or ""
@@ -419,7 +415,6 @@ class SchedulerDaemon:
             project_dir=project_dir,
             model=model,
             max_turns=max_turns,
-            effort=effort,
         )
 
     async def _send_notifications(

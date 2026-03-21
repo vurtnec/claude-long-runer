@@ -107,7 +107,6 @@ def create_client(
     permission_mode: str | None = None,
     resume: str | None = None,
     restricted: bool = False,
-    effort: str | None = None,
 ) -> ClaudeSDKClient:
     """
     Create a Claude Agent SDK client with multi-layered security.
@@ -227,8 +226,6 @@ def create_client(
         options_kwargs["permission_mode"] = permission_mode
     if resume:
         options_kwargs["resume"] = resume
-    if effort:
-        options_kwargs["effort"] = effort
 
     return ClaudeSDKClient(
         options=ClaudeAgentOptions(**options_kwargs)

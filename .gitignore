@@ -60,6 +60,3 @@ schedules/*
 !schedules/_examples/
 
 temp
-
-# Feishu bot downloaded images
-tmp_images/
