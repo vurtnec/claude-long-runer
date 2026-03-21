@@ -167,10 +167,15 @@ class FeishuBotServer:
             "model",
             config.get("defaults", {}).get("model", "claude-sonnet-4-5-20250929"),
         )
+        self.default_effort: str | None = bot_config.get(
+            "effort",
+            config.get("defaults", {}).get("effort"),
+        )
         # Projects: alias → absolute path, with per-project settings
         self.projects: Dict[str, Path] = {}
         self._project_restricted: Dict[str, bool] = {}   # alias → restricted flag
         self._project_models: Dict[str, str] = {}         # alias → default model
+        self._project_efforts: Dict[str, str] = {}        # alias → default effort
         for alias, value in bot_config.get("projects", {}).items():
             if isinstance(value, str):
                 # Legacy format: plain path string
@@ -182,6 +187,8 @@ class FeishuBotServer:
                     self._project_restricted[alias] = True
                 if value.get("model"):
                     self._project_models[alias] = value["model"]
+                if value.get("effort"):
+                    self._project_efforts[alias] = value["effort"]
 
         # Default project
         default_alias = bot_config.get("default_project", "")
@@ -216,6 +223,7 @@ class FeishuBotServer:
         self._sessions: Dict[str, ChatSession] = {}
         self._chat_project_dirs: Dict[str, Path] = {}  # chat_id → selected project_dir
         self._chat_models: Dict[str, str] = {}  # chat_id → model ID
+        self._chat_efforts: Dict[str, str] = {}  # chat_id → effort level
         self._chat_modes: Dict[str, str] = {}  # chat_id → permission mode
 
         # Message dedup: Feishu may deliver the same event multiple times
@@ -391,6 +399,9 @@ class FeishuBotServer:
         elif command == "/model":
             arg = parts[1] if len(parts) >= 2 else None
             self._handle_model(arg, chat_id, message_id)
+        elif command == "/effort":
+            arg = parts[1] if len(parts) >= 2 else None
+            self._handle_effort(arg, chat_id, message_id)
         elif command == "/rename":
             # Use split(None, 1) to keep the full title as a single string
             title = text.split(None, 1)[1] if len(text.split(None, 1)) >= 2 else None
@@ -603,17 +614,27 @@ class FeishuBotServer:
         else:
             model = self.default_model
 
+        # Effort priority: user /effort override > per-project effort > global default
+        if chat_id in self._chat_efforts:
+            effort = self._chat_efforts[chat_id]
+        elif project_alias and project_alias in self._project_efforts:
+            effort = self._project_efforts[project_alias]
+        else:
+            effort = self.default_effort
+
         mode = self._chat_modes.get(chat_id)
         restricted = self._project_restricted.get(project_alias or "", False)
 
         # Create new session
         restriction_tag = " [RESTRICTED]" if restricted else ""
-        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (project: {project_dir}, model: {model}, mode: {mode or 'default'}{restriction_tag})")
+        effort_tag = f", effort: {effort}" if effort else ""
+        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (project: {project_dir}, model: {model}, mode: {mode or 'default'}{effort_tag}{restriction_tag})")
         client = create_client(
             project_dir=project_dir,
             model=model,
             permission_mode=mode,
             restricted=restricted,
+            effort=effort,
         )
 
         session = ChatSession(chat_id=chat_id, client=client, project_dir=project_dir)
@@ -977,6 +998,7 @@ class FeishuBotServer:
             "/project — Show current project / switch project\n"
             "/mode [plan|auto|default] — Show or switch permission mode\n"
             "/model [opus|sonnet|haiku] — Show or switch model\n"
+            "/effort [low|medium|high|max] — Show or switch effort level\n"
             "/rename <title> — Rename current session\n"
             "/resume [number] — List recent sessions / resume by number\n"
             "/list  — List available schedules\n"
@@ -1249,6 +1271,49 @@ class FeishuBotServer:
             self._send_message(
                 chat_id,
                 f"Model set to: {arg} ({new_model})\nWill take effect on next session.",
+            )
+
+    # ── Effort switching ────────────────────────────────────────────────
+
+    EFFORT_LEVELS = {"low", "medium", "high", "max"}
+
+    def _handle_effort(self, arg: str | None, chat_id: str, message_id: str):
+        """Handle /effort command: show or switch effort level."""
+        session = self._sessions.get(chat_id)
+
+        if arg is None:
+            # Show current effort
+            current = self._chat_efforts.get(chat_id, self.default_effort)
+            display = current or "default (not set)"
+            self._reply_text(message_id, f"Current effort: {display}")
+            return
+
+        arg = arg.lower().strip()
+        if arg not in self.EFFORT_LEVELS:
+            self._reply_text(
+                message_id,
+                f"Unknown effort level: {arg}\nAvailable: low, medium, high, max",
+            )
+            return
+
+        self._chat_efforts[chat_id] = arg
+
+        # Effort is embedded in client — need to close and recreate session
+        if session and session.connected:
+            if session.session_id:
+                self._save_session_to_history(chat_id, session)
+            if self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self._close_session(chat_id), self._loop
+                )
+            self._send_message(
+                chat_id,
+                f"Effort switched to: {arg}\nSession reset — send a message to start.",
+            )
+        else:
+            self._send_message(
+                chat_id,
+                f"Effort set to: {arg}\nWill take effect on next session.",
             )
 
     # ── Resume / session history ────────────────────────────────────────

@@ -163,6 +163,7 @@ async def run_long_task(
     model: str,
     max_iterations: int = 5,
     resume: bool = False,
+    effort: str | None = None,
 ) -> bool:
     """
     Execute a long-running task with iteration loop.
@@ -279,7 +280,7 @@ async def run_long_task(
         print()
 
         # Create client (fresh context for each iteration)
-        client = create_client(project_dir, model, task_config.browser_tool, task_config.system_prompt)
+        client = create_client(project_dir, model, task_config.browser_tool, task_config.system_prompt, effort=effort)
 
         # Choose prompt based on whether this is the first run
         if is_first_run:
@@ -442,6 +443,13 @@ Examples:
         help="Claude model to use (default: claude-sonnet-4-5-20250929)",
     )
     parser.add_argument(
+        "--effort",
+        type=str,
+        choices=["low", "medium", "high", "max"],
+        default=None,
+        help="Effort level for thinking depth (low, medium, high, max)",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume from existing state file",
@@ -482,6 +490,7 @@ Examples:
                 model=args.model,
                 max_iterations=args.max_iterations,
                 resume=args.resume,
+                effort=args.effort,
             )
         )
 
