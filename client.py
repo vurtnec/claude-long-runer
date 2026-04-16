@@ -118,7 +118,7 @@ def create_client(
         browser_tool: Browser automation tool to use
         system_prompt: Custom system prompt
         max_turns: Maximum conversation turns
-        permission_mode: Permission mode ('default', 'acceptEdits', 'plan', 'bypassPermissions')
+        permission_mode: Permission mode ('default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk', 'auto')
         resume: Session ID to resume a previous conversation
         restricted: If True, bash commands are restricted to paths within project_dir
 

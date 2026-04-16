@@ -92,7 +92,8 @@ BASE_ALLOWED_COMMANDS = {
     "date",
     "gradlew",
     "gradle",
-    "gcloud"
+    "gcloud",
+    "keytool"
 }
 
 # Task-specific allowed commands (set at runtime)

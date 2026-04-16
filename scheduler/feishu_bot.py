@@ -60,7 +60,8 @@ SESSION_TIMEOUT_SECONDS = 50 * 60 * 60
 MODE_ALIASES = {
     "plan": "plan",             # Plan — suggest only, no execution
     "ask": "default",           # Ask before edits
-    "auto": "acceptEdits",      # Edit automatically
+    "auto": "auto",             # Auto-determine permissions (new in SDK 0.1.60)
+    "edits": "acceptEdits",     # Auto-accept file edits (previously named 'auto')
 }
 
 # Reverse mapping for display: SDK permission_mode → user-friendly name
@@ -68,7 +69,7 @@ MODE_DISPLAY = {v: k for k, v in MODE_ALIASES.items()}
 
 # Model aliases: user-friendly names → model IDs
 MODEL_ALIASES = {
-    "opus": "claude-opus-4-6",
+    "opus": "claude-opus-4-7",
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5-20251001",
 }
@@ -103,7 +104,7 @@ class ChatSession:
         self.permission_mode: str = "default"
         self.first_message: str | None = None
         self.project_alias: str | None = None
-        self.model: str = "claude-opus-4-6"
+        self.model: str = "claude-opus-4-7"
         self.custom_title: str | None = None
         # Progress tracking for /status command
         self.working_since: datetime | None = None  # set when agent starts processing
@@ -780,6 +781,7 @@ class FeishuBotServer:
 
                 # Collect response (stops automatically at ResultMessage)
                 response_text = ""
+                exit_plan_attempted = False
                 async for msg in session.client.receive_response():
                     msg_type = type(msg).__name__
 
@@ -791,6 +793,8 @@ class FeishuBotServer:
                                 response_text += block.text
                                 print(block.text, end="", flush=True)
                             elif block_type == "ToolUseBlock" and hasattr(block, "name"):
+                                if block.name == "ExitPlanMode":
+                                    exit_plan_attempted = True
                                 session.tool_count += 1
                                 # Track tool name + input summary for /status
                                 input_summary = ""
@@ -868,6 +872,14 @@ class FeishuBotServer:
                 reply = f"{response_text}\n\n({duration_str} | mode: {mode_display})"
             else:
                 reply = f"Done ({duration_str} | mode: {mode_display})"
+
+            # In plan mode, agent's ExitPlanMode tool call is blocked (no approval
+            # channel in the bot). Tell the user to switch modes instead.
+            if exit_plan_attempted and session.permission_mode == "plan":
+                reply += (
+                    "\n\nℹ️ Plan 模式下计划无法自动执行。确认后请发送 "
+                    "`/mode auto`（自动编辑）或 `/mode ask`（逐步确认）后再回复继续。"
+                )
 
             self._send_message(chat_id, reply)
 
@@ -1098,9 +1110,9 @@ class FeishuBotServer:
             "Available commands:\n\n"
             "/help  — Show this help\n"
             "/project — Show current project / switch project\n"
-            "/mode [plan|auto|default] — Show or switch permission mode\n"
+            "/mode [plan|ask|auto|edits] — Show or switch permission mode\n"
             "/model [opus|sonnet|haiku] — Show or switch model\n"
-            "/effort [low|medium|high|max] — Show or switch effort level\n"
+            "/effort [low|medium|high|xhigh|max] — Show or switch effort level\n"
             "/rename <title> — Rename current session\n"
             "/resume [number] — List recent sessions / resume by number\n"
             "/list  — List available schedules\n"
@@ -1377,7 +1389,7 @@ class FeishuBotServer:
 
     # ── Effort switching ────────────────────────────────────────────────
 
-    EFFORT_LEVELS = {"low", "medium", "high", "max"}
+    EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max"}
 
     def _handle_effort(self, arg: str | None, chat_id: str, message_id: str):
         """Handle /effort command: show or switch effort level."""
@@ -1394,7 +1406,7 @@ class FeishuBotServer:
         if arg not in self.EFFORT_LEVELS:
             self._reply_text(
                 message_id,
-                f"Unknown effort level: {arg}\nAvailable: low, medium, high, max",
+                f"Unknown effort level: {arg}\nAvailable: low, medium, high, xhigh, max",
             )
             return
 

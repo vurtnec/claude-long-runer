@@ -445,9 +445,9 @@ Examples:
     parser.add_argument(
         "--effort",
         type=str,
-        choices=["low", "medium", "high", "max"],
+        choices=["low", "medium", "high", "xhigh", "max"],
         default=None,
-        help="Effort level for thinking depth (low, medium, high, max)",
+        help="Effort level for thinking depth (low, medium, high, xhigh, max)",
     )
     parser.add_argument(
         "--resume",

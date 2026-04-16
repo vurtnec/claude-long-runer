@@ -46,16 +46,16 @@ history:
 
 # Default values for all scheduled tasks (overridable per schedule)
 defaults:
-  model: "claude-opus-4-6"
-  effort: "high"                    # Thinking depth: low, medium, high, max (omit to use CLI default)
+  model: "claude-opus-4-7"
+  effort: "xhigh"                   # Thinking depth: low, medium, high, xhigh, max (omit to use CLI default)
   max_iterations: 10
   timeout_minutes: 120
 
 # Feishu bot settings (for receiving messages and triggering tasks)
 feishu_bot:
   enabled: true                     # Start bot alongside daemon
-  model: "claude-opus-4-6"
-  effort: "high"                    # Default effort for bot sessions (omit to use CLI default)
+  model: "claude-opus-4-7"
+  effort: "xhigh"                   # Default effort for bot sessions (omit to use CLI default)
   max_turns: 10
   # allowed_user_ids: []            # Empty = allow all; add open_ids to restrict
 
