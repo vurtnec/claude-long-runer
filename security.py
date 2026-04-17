@@ -93,7 +93,11 @@ BASE_ALLOWED_COMMANDS = {
     "gradlew",
     "gradle",
     "gcloud",
-    "keytool"
+    "keytool",
+    "az",
+    "ssh",
+    "pip",
+    "pip3"
 }
 
 # Task-specific allowed commands (set at runtime)
