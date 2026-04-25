@@ -3,11 +3,11 @@ Feishu Bot Server
 ==================
 
 Receives group messages via the Feishu Open Platform WebSocket long-connection mode,
-uses ClaudeSDKClient's multi-turn conversation capability to maintain context,
+uses AgentClient's multi-turn conversation capability to maintain context,
 and replies results back to the group chat.
 
-Each group chat (chat_id) maintains a persistent ClaudeSDKClient,
-equivalent to an ongoing conversation in the Claude Code CLI.
+Each group chat (chat_id) maintains a persistent AgentClient (Claude or Codex),
+equivalent to an ongoing conversation in the Claude Code CLI or Codex CLI.
 
 Prerequisites:
 1. Create an enterprise app at open.feishu.cn and enable bot capabilities
@@ -47,8 +47,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import yaml
 
-from client import create_client
-from claude_agent_sdk import ClaudeSDKClient
+from agent_protocol import AgentClient, AgentEvent, EventType, Feature, create_agent_client
+from client import create_client  # kept for backward compat (schedule execution)
 
 from .schedule_loader import load_all_schedules, resolve_env_vars
 
@@ -75,6 +75,25 @@ MODEL_ALIASES = {
 }
 MODEL_DISPLAY = {v: k for k, v in MODEL_ALIASES.items()}
 
+# Backend aliases and per-backend model maps
+BACKEND_ALIASES = {"claude", "codex"}
+
+CODEX_MODEL_ALIASES = {
+    # Verified via codex.models() — 2026-04
+    "gpt-5.5":       "gpt-5.5",          # default frontier
+    "gpt-5.4":       "gpt-5.4",
+    "gpt-5.4-mini":  "gpt-5.4-mini",
+    "gpt-5.3-codex": "gpt-5.3-codex",
+    "gpt-5.2":       "gpt-5.2",
+}
+CODEX_MODEL_DISPLAY = {v: k for k, v in CODEX_MODEL_ALIASES.items()}
+
+# Default models per backend
+BACKEND_DEFAULT_MODELS = {
+    "claude": "claude-opus-4-7",
+    "codex": "gpt-5.5",
+}
+
 # Session history persistence
 SESSION_HISTORY_FILE = Path.home() / ".claude-long-runner" / "feishu_sessions.json"
 SESSION_HISTORY_MAX_PER_CHAT = 10
@@ -85,13 +104,14 @@ CLAUDE_SESSIONS_DIR = Path.home() / ".claude" / "projects"
 
 class ChatSession:
     """
-    Manages a single group chat's Claude session.
+    Manages a single group chat's agent session.
 
-    Each chat_id maps to one ChatSession, which internally maintains a persistent ClaudeSDKClient.
+    Each chat_id maps to one ChatSession, which internally maintains a persistent
+    AgentClient (either Claude or Codex).
     An asyncio.Lock ensures messages within the same chat are processed serially.
     """
 
-    def __init__(self, chat_id: str, client: ClaudeSDKClient, project_dir: Path):
+    def __init__(self, chat_id: str, client: AgentClient, project_dir: Path):
         self.chat_id = chat_id
         self.client = client
         self.project_dir = project_dir
@@ -105,6 +125,7 @@ class ChatSession:
         self.first_message: str | None = None
         self.project_alias: str | None = None
         self.model: str = "claude-opus-4-7"
+        self.backend: str = "claude"  # "claude" or "codex"
         self.custom_title: str | None = None
         # Progress tracking for /status command
         self.working_since: datetime | None = None  # set when agent starts processing
@@ -143,7 +164,7 @@ class FeishuBotServer:
     Feishu app bot server.
 
     Receives group messages via WebSocket long connection, supporting multi-turn conversations:
-    - Each group chat maintains a persistent ClaudeSDKClient (per-chat session)
+    - Each group chat maintains a persistent AgentClient (per-chat session)
     - Each user message is appended to the same conversation; Claude retains full context
     - Supports /new (reset conversation), /stop (stop session), /run (trigger schedule), etc.
     """
@@ -173,17 +194,19 @@ class FeishuBotServer:
             "effort",
             config.get("defaults", {}).get("effort"),
         )
+        self.default_backend: str = bot_config.get("default_backend", "claude")
         # Projects: alias → absolute path, with per-project settings
         self.projects: Dict[str, Path] = {}
         self._project_restricted: Dict[str, bool] = {}   # alias → restricted flag
         self._project_models: Dict[str, str] = {}         # alias → default model
         self._project_efforts: Dict[str, str] = {}        # alias → default effort
+        self._project_backends: Dict[str, str] = {}       # alias → default backend
         for alias, value in bot_config.get("projects", {}).items():
             if isinstance(value, str):
                 # Legacy format: plain path string
                 self.projects[alias] = Path(value).resolve()
             elif isinstance(value, dict):
-                # New format: dict with path, restricted, model
+                # New format: dict with path, restricted, model, backend
                 self.projects[alias] = Path(value["path"]).resolve()
                 if value.get("restricted"):
                     self._project_restricted[alias] = True
@@ -191,6 +214,8 @@ class FeishuBotServer:
                     self._project_models[alias] = value["model"]
                 if value.get("effort"):
                     self._project_efforts[alias] = value["effort"]
+                if value.get("backend"):
+                    self._project_backends[alias] = value["backend"]
 
         # Default project
         default_alias = bot_config.get("default_project", "")
@@ -227,6 +252,7 @@ class FeishuBotServer:
         self._chat_models: Dict[str, str] = {}  # chat_id → model ID
         self._chat_efforts: Dict[str, str] = {}  # chat_id → effort level
         self._chat_modes: Dict[str, str] = {}  # chat_id → permission mode
+        self._chat_backends: Dict[str, str] = {}  # chat_id → backend ("claude" or "codex")
 
         # Pending images: buffer images until user sends a text message
         self._pending_images: Dict[str, List[str]] = {}  # chat_id → [image_file_paths]
@@ -383,10 +409,32 @@ class FeishuBotServer:
             print(f"[Feishu Bot] Error handling message: {e}")
             traceback.print_exc()
 
+    # Bot's own slash commands — anything else gets forwarded to the agent
+    # (so users can run Claude/Codex custom slash commands like /init, /commit, etc.)
+    BOT_COMMANDS = frozenset({
+        "/help", "/list", "/new", "/stop", "/cancel", "/status",
+        "/project", "/mode", "/model", "/effort", "/backend",
+        "/rename", "/resume", "/run",
+    })
+
     def _handle_command(self, text: str, chat_id: str, message_id: str):
-        """Handle slash commands like /new, /stop, /run, /help, /list."""
+        """
+        Handle slash commands.
+
+        - Commands in BOT_COMMANDS are handled locally by the bot.
+        - Any other /xxx is forwarded to the agent as a prompt, so users
+          can invoke Claude's custom slash commands (~/.claude/commands/*.md
+          or <project>/.claude/commands/*.md), Codex slash commands, etc.
+        """
         parts = text.split(None, 2)
         command = parts[0].lower()
+
+        # Forward unknown commands to the agent — they may be Claude/Codex
+        # internal slash commands (e.g. /init, /commit, /compact).
+        if command not in self.BOT_COMMANDS:
+            print(f"  [Forward] '{command}' is not a bot command — sending to agent")
+            self._handle_free_prompt(text, chat_id, message_id)
+            return
 
         if command == "/help":
             self._send_help(chat_id, message_id)
@@ -412,6 +460,9 @@ class FeishuBotServer:
         elif command == "/effort":
             arg = parts[1] if len(parts) >= 2 else None
             self._handle_effort(arg, chat_id, message_id)
+        elif command == "/backend":
+            arg = parts[1] if len(parts) >= 2 else None
+            self._handle_backend(arg, chat_id, message_id)
         elif command == "/rename":
             # Use split(None, 1) to keep the full title as a single string
             title = text.split(None, 1)[1] if len(text.split(None, 1)) >= 2 else None
@@ -425,11 +476,8 @@ class FeishuBotServer:
                 return
             schedule_name = parts[1]
             self._trigger_schedule(schedule_name, chat_id, message_id)
-        else:
-            self._reply_text(
-                message_id,
-                f"Unknown command: {command}\nType /help for available commands.",
-            )
+        # No else: unrecognized commands were forwarded to the agent at the
+        # top of this method.
 
     def _handle_new_session(self, chat_id: str, message_id: str):
         """Handle /new command: archive current session and reset."""
@@ -728,12 +776,25 @@ class FeishuBotServer:
         mode = self._chat_modes.get(chat_id)
         restricted = self._project_restricted.get(project_alias or "", False)
 
+        # Backend priority: user /backend override > per-project backend > global default
+        if chat_id in self._chat_backends:
+            backend = self._chat_backends[chat_id]
+        elif project_alias and project_alias in self._project_backends:
+            backend = self._project_backends[project_alias]
+        else:
+            backend = self.default_backend
+
+        # If model was never explicitly set and backend changed, use backend's default model
+        if chat_id not in self._chat_models and (not project_alias or project_alias not in self._project_models):
+            model = BACKEND_DEFAULT_MODELS.get(backend, model)
+
         # Create new session
         restriction_tag = " [RESTRICTED]" if restricted else ""
         effort_tag = f", effort: {effort}" if effort else ""
-        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (project: {project_dir}, model: {model}, mode: {mode or 'default'}{effort_tag}{restriction_tag})")
-        client = create_client(
-            project_dir=project_dir,
+        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (backend: {backend}, project: {project_dir}, model: {model}, mode: {mode or 'default'}{effort_tag}{restriction_tag})")
+        client = create_agent_client(
+            backend=backend,
+            project_dir=str(project_dir),
             model=model,
             permission_mode=mode,
             restricted=restricted,
@@ -742,6 +803,7 @@ class FeishuBotServer:
 
         session = ChatSession(chat_id=chat_id, client=client, project_dir=project_dir)
         session.model = model
+        session.backend = backend
         if mode:
             session.permission_mode = mode
         session.project_alias = self._get_project_alias(project_dir)
@@ -765,86 +827,83 @@ class FeishuBotServer:
             await self._close_session(cid)
 
     async def _execute_and_reply(self, prompt: str, chat_id: str, message_id: str):
-        """Send prompt to persistent Claude session and reply with result."""
+        """Send prompt to persistent agent session and reply with result."""
         start_time = datetime.now()
         try:
             session = await self._get_or_create_session(chat_id)
 
             async with session.lock:
                 # Send the prompt to the existing conversation
-                await session.client.query(prompt)
+                await session.client.send_message(prompt)
 
                 # Reset progress tracking
                 session.working_since = datetime.now()
                 session.tool_count = 0
                 session.recent_tools = []
 
-                # Collect response (stops automatically at ResultMessage)
+                # Collect response via unified AgentEvent stream
                 response_text = ""
                 exit_plan_attempted = False
-                async for msg in session.client.receive_response():
-                    msg_type = type(msg).__name__
+                async for event in session.client.receive_events():
 
-                    if msg_type == "AssistantMessage" and hasattr(msg, "content"):
-                        for block in msg.content:
-                            block_type = type(block).__name__
+                    if event.type == EventType.TEXT:
+                        response_text += event.text
+                        print(event.text, end="", flush=True)
+                        # Log actual model if provided
+                        actual_model = event.metadata.get("model")
+                        if actual_model:
+                            print(f"  [Model] Actual model in response: {actual_model}")
 
-                            if block_type == "TextBlock" and hasattr(block, "text"):
-                                response_text += block.text
-                                print(block.text, end="", flush=True)
-                            elif block_type == "ToolUseBlock" and hasattr(block, "name"):
-                                if block.name == "ExitPlanMode":
-                                    exit_plan_attempted = True
-                                session.tool_count += 1
-                                # Track tool name + input summary for /status
-                                input_summary = ""
-                                if hasattr(block, "input") and block.input:
-                                    input_summary = str(block.input)
-                                    if len(input_summary) > 80:
-                                        input_summary = input_summary[:80] + "..."
-                                session.recent_tools.append({"name": block.name, "input": input_summary})
-                                if len(session.recent_tools) > 5:
-                                    session.recent_tools = session.recent_tools[-5:]
-                                print(f"\n[Tool: {block.name}]", flush=True)
-                                if hasattr(block, "input"):
-                                    input_str = str(block.input)
-                                    if len(input_str) > 200:
-                                        print(f"   Input: {input_str[:200]}...", flush=True)
-                                    else:
-                                        print(f"   Input: {input_str}", flush=True)
+                    elif event.type == EventType.TOOL_USE:
+                        if event.tool_name == "ExitPlanMode":
+                            exit_plan_attempted = True
+                        session.tool_count += 1
+                        # Track tool name + input summary for /status
+                        input_summary = ""
+                        if event.tool_input:
+                            input_summary = str(event.tool_input)
+                            if len(input_summary) > 80:
+                                input_summary = input_summary[:80] + "..."
+                        session.recent_tools.append({"name": event.tool_name, "input": input_summary})
+                        if len(session.recent_tools) > 5:
+                            session.recent_tools = session.recent_tools[-5:]
+                        print(f"\n[Tool: {event.tool_name}]", flush=True)
+                        if event.tool_input:
+                            input_str = str(event.tool_input)
+                            if len(input_str) > 200:
+                                print(f"   Input: {input_str[:200]}...", flush=True)
+                            else:
+                                print(f"   Input: {input_str}", flush=True)
 
-                    elif msg_type == "UserMessage" and hasattr(msg, "content"):
-                        for block in msg.content:
-                            block_type = type(block).__name__
-                            if block_type == "ToolResultBlock":
-                                result_content = getattr(block, "content", "")
-                                is_error = getattr(block, "is_error", False)
-                                if "blocked" in str(result_content).lower():
-                                    print(f"   [BLOCKED] {result_content}", flush=True)
-                                elif is_error:
-                                    print(f"   [Error] {str(result_content)[:500]}", flush=True)
-                                else:
-                                    print("   [Done]", flush=True)
+                    elif event.type == EventType.TOOL_RESULT:
+                        result_content = event.result_content or ""
+                        if "blocked" in result_content.lower():
+                            print(f"   [BLOCKED] {result_content}", flush=True)
+                        elif event.is_error:
+                            print(f"   [Error] {result_content[:500]}", flush=True)
+                        else:
+                            print("   [Done]", flush=True)
 
-                    elif msg_type == "SystemMessage":
-                        # Capture permission_mode and session_id from init message
-                        if hasattr(msg, "data") and isinstance(msg.data, dict):
-                            init_mode = msg.data.get("permission_mode")
-                            if init_mode:
-                                session.permission_mode = init_mode
-                            init_session_id = msg.data.get("session_id")
-                            if init_session_id:
-                                session.session_id = init_session_id
-                            print(f"  [System] mode={init_mode}, session={init_session_id and init_session_id[:8]}...")
+                    elif event.type == EventType.SYSTEM:
+                        init_mode = event.metadata.get("permission_mode")
+                        if init_mode:
+                            session.permission_mode = init_mode
+                        init_session_id = event.metadata.get("session_id")
+                        if init_session_id:
+                            session.session_id = init_session_id
+                        print(f"  [System] mode={init_mode}, session={init_session_id and init_session_id[:8]}...")
 
-                    elif msg_type == "ResultMessage":
-                        # ResultMessage signals end of response
-                        num_turns = getattr(msg, "num_turns", "?")
-                        is_error = getattr(msg, "is_error", False)
-                        result_session_id = getattr(msg, "session_id", None)
+                    elif event.type == EventType.RESULT:
+                        num_turns = event.metadata.get("num_turns", "?")
+                        is_error = event.metadata.get("is_error", False)
+                        result_session_id = event.metadata.get("session_id")
                         if result_session_id:
                             session.session_id = result_session_id
                         print(f"\n  [Result] turns={num_turns}, error={is_error}, session={session.session_id and session.session_id[:8]}...")
+
+                    elif event.type == EventType.ERROR:
+                        error_msg = event.metadata.get("error", "Unknown error")
+                        print(f"  [Error] {error_msg}", flush=True)
 
                 # Done working
                 session.working_since = None
@@ -1110,8 +1169,9 @@ class FeishuBotServer:
             "Available commands:\n\n"
             "/help  — Show this help\n"
             "/project — Show current project / switch project\n"
+            "/backend [claude|codex] — Show or switch agent backend\n"
             "/mode [plan|ask|auto|edits] — Show or switch permission mode\n"
-            "/model [opus|sonnet|haiku] — Show or switch model\n"
+            "/model [opus|sonnet|haiku|o3|o4-mini|gpt-5] — Show or switch model\n"
             "/effort [low|medium|high|xhigh|max] — Show or switch effort level\n"
             "/rename <title> — Rename current session\n"
             "/resume [number] — List recent sessions / resume by number\n"
@@ -1121,9 +1181,12 @@ class FeishuBotServer:
             "/stop  — Stop and disconnect current session\n"
             "/cancel — Interrupt current request (keep session)\n"
             "/status — Check if agent is working and what it's doing\n\n"
-            "Or just send a message to chat with Claude.\n"
-            "Multi-turn conversation is supported — Claude remembers context.\n"
-            "Each reply shows the current mode automatically."
+            "Send a message to chat with the agent.\n"
+            "Multi-turn conversation is supported — context is preserved.\n"
+            "Each reply shows the current mode automatically.\n\n"
+            "Tip: any /command not listed above (e.g. /init, /commit, /compact)\n"
+            "is forwarded to the agent as a prompt, so you can use Claude's\n"
+            "or Codex's custom slash commands directly."
         )
         self._reply_text(message_id, help_text)
 
@@ -1268,6 +1331,13 @@ class FeishuBotServer:
 
     async def _switch_mode(self, session: ChatSession, sdk_mode: str, display_name: str, chat_id: str, message_id: str):
         """Switch permission mode on an active session."""
+        if not session.client.supports(Feature.PERMISSION_MODE):
+            self._send_message(
+                chat_id,
+                f"Backend '{session.backend}' does not support dynamic mode switching.\n"
+                "Mode is set at session creation time.",
+            )
+            return
         try:
             await session.client.set_permission_mode(sdk_mode)
             session.permission_mode = sdk_mode
@@ -1340,34 +1410,106 @@ class FeishuBotServer:
             traceback.print_exc()
             self._send_message(chat_id, f"Failed to rename: {e}")
 
+    # ── Backend switching ────────────────────────────────────────────────
+
+    def _handle_backend(self, arg: str | None, chat_id: str, message_id: str):
+        """Handle /backend command: show or switch agent backend."""
+        session = self._sessions.get(chat_id)
+
+        if arg is None:
+            # Show current backend
+            if session:
+                model_display = (CODEX_MODEL_DISPLAY if session.backend == "codex" else MODEL_DISPLAY).get(session.model, session.model)
+                self._reply_text(message_id, f"Current backend: {session.backend} (model: {model_display})")
+            else:
+                current = self._chat_backends.get(chat_id, self.default_backend)
+                self._reply_text(message_id, f"Current backend: {current} (no active session)")
+            return
+
+        arg = arg.lower().strip()
+        if arg not in BACKEND_ALIASES:
+            available = ", ".join(sorted(BACKEND_ALIASES))
+            self._reply_text(
+                message_id,
+                f"Unknown backend: {arg}\nAvailable: {available}",
+            )
+            return
+
+        old_backend = self._chat_backends.get(chat_id, self.default_backend)
+        self._chat_backends[chat_id] = arg
+
+        # Reset model to the new backend's default (unless user explicitly set one)
+        default_model = BACKEND_DEFAULT_MODELS.get(arg, "")
+        model_display = (CODEX_MODEL_DISPLAY if arg == "codex" else MODEL_DISPLAY).get(default_model, default_model)
+
+        # Backend requires new session — close current one
+        if session and session.connected:
+            if session.session_id:
+                self._save_session_to_history(chat_id, session)
+            # Clear model override so the new backend's default kicks in
+            self._chat_models.pop(chat_id, None)
+            if self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self._close_session(chat_id), self._loop
+                )
+            self._send_message(
+                chat_id,
+                f"Backend switched to: {arg} (default model: {model_display})\n"
+                "Session reset — send a message to start.",
+            )
+        else:
+            self._chat_models.pop(chat_id, None)
+            self._send_message(
+                chat_id,
+                f"Backend set to: {arg} (default model: {model_display})\n"
+                "Will take effect on next session.",
+            )
+
     # ── Model switching ──────────────────────────────────────────────────
 
     def _handle_model(self, arg: str | None, chat_id: str, message_id: str):
-        """Handle /model command: show or switch model."""
+        """Handle /model command: show or switch model (backend-aware)."""
         session = self._sessions.get(chat_id)
+        backend = self._chat_backends.get(chat_id, self.default_backend)
+        if session:
+            backend = session.backend
+
+        # Pick the right alias map based on current backend
+        aliases = CODEX_MODEL_ALIASES if backend == "codex" else MODEL_ALIASES
+        display_map = CODEX_MODEL_DISPLAY if backend == "codex" else MODEL_DISPLAY
 
         if arg is None:
             # Show current model
             if session:
-                display = MODEL_DISPLAY.get(session.model, session.model)
-                self._reply_text(message_id, f"Current model: {display} ({session.model})")
+                display = display_map.get(session.model, session.model)
+                self._reply_text(message_id, f"Current model: {display} ({session.model}) [{backend}]")
             else:
-                current = self._chat_models.get(chat_id, self.default_model)
-                display = MODEL_DISPLAY.get(current, current)
-                self._reply_text(message_id, f"Current model: {display} (no active session)")
+                current = self._chat_models.get(chat_id, BACKEND_DEFAULT_MODELS.get(backend, self.default_model))
+                display = display_map.get(current, current)
+                self._reply_text(message_id, f"Current model: {display} [{backend}] (no active session)")
             return
 
         arg = arg.lower().strip()
-        if arg not in MODEL_ALIASES:
-            available = ", ".join(MODEL_ALIASES.keys())
+        # Try current backend's aliases first, then the other
+        all_aliases = {**MODEL_ALIASES, **CODEX_MODEL_ALIASES}
+        if arg not in all_aliases:
+            available = ", ".join(aliases.keys())
             self._reply_text(
                 message_id,
-                f"Unknown model: {arg}\nAvailable models: {available}",
+                f"Unknown model: {arg}\nAvailable models ({backend}): {available}",
             )
             return
 
-        new_model = MODEL_ALIASES[arg]
+        new_model = all_aliases[arg]
         self._chat_models[chat_id] = new_model
+
+        # If user picks a Codex model while on Claude (or vice versa), auto-switch backend
+        if arg in CODEX_MODEL_ALIASES and backend != "codex":
+            self._chat_backends[chat_id] = "codex"
+            backend = "codex"
+        elif arg in MODEL_ALIASES and backend != "claude":
+            self._chat_backends[chat_id] = "claude"
+            backend = "claude"
 
         # Model is embedded in client — need to close and recreate session
         if session and session.connected:
@@ -1379,12 +1521,12 @@ class FeishuBotServer:
                 )
             self._send_message(
                 chat_id,
-                f"Model switched to: {arg} ({new_model})\nSession reset — send a message to start.",
+                f"Model switched to: {arg} ({new_model}) [{backend}]\nSession reset — send a message to start.",
             )
         else:
             self._send_message(
                 chat_id,
-                f"Model set to: {arg} ({new_model})\nWill take effect on next session.",
+                f"Model set to: {arg} ({new_model}) [{backend}]\nWill take effect on next session.",
             )
 
     # ── Effort switching ────────────────────────────────────────────────
@@ -1481,6 +1623,7 @@ class FeishuBotServer:
                 "created_at": session.created_at.isoformat(),
                 "last_active": session.last_active.isoformat(),
                 "model": session.model,
+                "backend": session.backend,
                 "source": "bot",
             }
             chat_history.insert(0, entry)  # newest first
@@ -1489,6 +1632,7 @@ class FeishuBotServer:
             entry["last_active"] = session.last_active.isoformat()
             entry["permission_mode"] = session.permission_mode
             entry["model"] = session.model
+            entry["backend"] = session.backend
             if session.custom_title:
                 entry["summary"] = session.custom_title
             elif session.first_message and entry.get("summary") == "(no message)":
@@ -1606,6 +1750,7 @@ class FeishuBotServer:
                 "project_dir": str(project_dir),
                 "created_at": created,
                 "last_active": last_active,
+                "backend": "claude",
                 "source": "cli",
             })
 
@@ -1639,9 +1784,58 @@ class FeishuBotServer:
         return last_text
 
     def _get_merged_sessions(self, chat_id: str) -> list:
-        """Get session list from CLI session files for the current project."""
+        """
+        Get session list for the current chat, filtered by current backend.
+
+        - claude: scan ~/.claude/projects/ jsonl files (existing logic)
+        - codex:  call codex.thread_list() via SDK (sync wrapper around async)
+        """
+        backend = self._chat_backends.get(chat_id, self.default_backend)
+        # If a session is currently active, its backend wins (avoids confusing
+        # state where /backend was set but session not yet recreated)
+        session = self._sessions.get(chat_id)
+        if session:
+            backend = session.backend
+
         current_project_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
-        return self._scan_cli_sessions(current_project_dir)[:10]
+
+        if backend == "codex":
+            return self._scan_codex_threads_sync(current_project_dir)[:10]
+        else:
+            return self._scan_cli_sessions(current_project_dir)[:10]
+
+    def _scan_codex_threads_sync(self, project_dir: Path) -> list:
+        """
+        Sync wrapper around the async codex thread_list call.
+
+        Schedules the coroutine on the bot's event loop and blocks the
+        caller thread (the message handler thread) until it returns.
+        """
+        try:
+            from codex_agent import list_codex_threads, codex_available
+        except ImportError:
+            return []
+
+        if not codex_available():
+            return []
+
+        if not (self._loop and self._loop.is_running()):
+            return []
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                list_codex_threads(str(project_dir.resolve()), limit=10),
+                self._loop,
+            )
+            threads = future.result(timeout=15)
+            # Fill in project alias for display
+            alias = self._get_project_alias(project_dir)
+            for t in threads:
+                t["project_alias"] = alias
+            return threads
+        except Exception as e:
+            print(f"  [Codex] Failed to list threads: {e}")
+            return []
 
     def _handle_resume(self, arg: str | None, chat_id: str, message_id: str):
         """Handle /resume command: list history or resume a session."""
@@ -1657,7 +1851,9 @@ class FeishuBotServer:
             # List recent sessions for current project
             project_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
             alias = self._get_project_alias(project_dir) or str(project_dir)
-            lines = [f"Sessions for {alias}:\n"]
+            session = self._sessions.get(chat_id)
+            backend = session.backend if session else self._chat_backends.get(chat_id, self.default_backend)
+            lines = [f"Sessions for {alias} [backend: {backend}]:\n"]
             for i, entry in enumerate(merged, 1):
                 last_active = entry.get("last_active", "")
                 try:
@@ -1668,6 +1864,7 @@ class FeishuBotServer:
                 summary = entry.get("summary", "?")
                 lines.append(f'{i}. [{time_str}] "{summary}"')
             lines.append("\nUsage: /resume <number>")
+            lines.append(f"(Switch backend with /backend to see the other backend's sessions.)")
             self._reply_text(message_id, "\n".join(lines))
             return
 
@@ -1698,9 +1895,13 @@ class FeishuBotServer:
 
         project_dir = Path(project_dir_str)
 
-        # Auto-switch project and model if different from current
+        # Auto-switch project, backend, and model based on the entry
         self._chat_project_dirs[chat_id] = project_dir
-        model = entry.get("model", self.default_model)
+        entry_backend = entry.get("backend") or self._chat_backends.get(chat_id, self.default_backend)
+        self._chat_backends[chat_id] = entry_backend
+        # Use entry's model if present and looks valid for the backend; else
+        # fall back to the backend's default
+        model = entry.get("model") or BACKEND_DEFAULT_MODELS.get(entry_backend, self.default_model)
         self._chat_models[chat_id] = model
 
         # Resume asynchronously
@@ -1716,11 +1917,17 @@ class FeishuBotServer:
             # Close current session if any
             await self._close_session(chat_id)
 
-            model = entry.get("model", self.default_model)
+            # The entry's backend is authoritative — a Claude session_id can't
+            # be resumed by Codex and vice versa.  Auto-switch if needed.
+            backend = entry.get("backend") or self._chat_backends.get(chat_id, self.default_backend)
+            self._chat_backends[chat_id] = backend
+
+            model = entry.get("model") or BACKEND_DEFAULT_MODELS.get(backend, self.default_model)
             mode = entry.get("permission_mode", "acceptEdits")
-            print(f"  [Session] Resuming session {session_id[:8]}... for chat {chat_id[:8]}... (project: {project_dir}, model: {model}, mode: {mode})")
-            client = create_client(
-                project_dir=project_dir,
+            print(f"  [Session] Resuming session {session_id[:8]}... for chat {chat_id[:8]}... (backend: {backend}, project: {project_dir}, model: {model}, mode: {mode})")
+            client = create_agent_client(
+                backend=backend,
+                project_dir=str(project_dir),
                 model=model,
                 permission_mode=mode,
                 resume=session_id,
@@ -1729,6 +1936,7 @@ class FeishuBotServer:
             session = ChatSession(chat_id=chat_id, client=client, project_dir=project_dir)
             session.session_id = session_id
             session.model = model
+            session.backend = backend
             session.project_alias = project_alias
             session.custom_title = entry.get("custom_title")
             session.first_message = entry.get("summary")
