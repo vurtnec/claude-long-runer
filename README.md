@@ -1,22 +1,22 @@
-# Claude Long-Runner
+# Vurtnec Loom
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Built with Claude Agent SDK](https://img.shields.io/badge/Built%20with-Claude%20Agent%20SDK-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code/sdk)
 [![Codex SDK Support](https://img.shields.io/badge/Codex%20SDK-supported-10a37f.svg)](https://github.com/openai/codex)
 
-**Run agent tasks autonomously, on a schedule, or from your group chat — backed by Claude or Codex.**
+**Weave AI agents into schedules, team chat, and persistent workflows — backed by Claude or Codex.**
 
 <!-- TODO: Add a screenshot or GIF here -->
 <!-- ![Demo](docs/images/demo.gif) -->
 
 ## Why?
 
-Claude Code (and now OpenAI Codex) is powerful — but interactive. You sit there and watch it. Claude Long-Runner removes that constraint:
+Claude Code (and now OpenAI Codex) is powerful — but interactive. You sit there and watch it. Vurtnec Loom removes that constraint by weaving agents into the workflows around them:
 
-- **Long-running tasks** — neither Claude Code nor Codex has built-in support for persistent, multi-step tasks that survive interruptions. Long-Runner executes complex tasks across iterations with automatic state persistence and resume.
-- **Always-on scheduling** — Claude Code's `/loop` is limited and ephemeral. Long-Runner provides a real cron daemon that runs 24/7, triggers tasks on schedule, and delivers results to your notification channels.
-- **Team chat interface** — the upstream remote modes lack project switching and have poor voice recognition. Long-Runner's Feishu Bot gives your whole team access with per-chat sessions, seamless project switching, and Feishu's excellent voice-to-text.
+- **Long-running tasks** — neither Claude Code nor Codex has built-in support for persistent, multi-step tasks that survive interruptions. Loom executes complex tasks across iterations with automatic state persistence and resume.
+- **Always-on scheduling** — Claude Code's `/loop` is limited and ephemeral. Loom provides a real cron daemon that runs 24/7, triggers tasks on schedule, and delivers results to your notification channels.
+- **Team chat interface** — the upstream remote modes lack project switching and have poor voice recognition. Loom's Feishu Bot gives your whole team access with per-chat sessions, seamless project switching, and Feishu's excellent voice-to-text.
 - **Multi-backend** — pick the agent best suited to the task: Claude (Anthropic) or Codex (OpenAI). Switch per-chat at runtime via `/backend`, with each backend keeping its own session history isolated.
 
 ## Quick Start (3 minutes)
@@ -87,7 +87,7 @@ That's it! @mention the bot in your Feishu group chat and start talking to Claud
 
 ---
 
-## Long Runner Task
+## Long-Run Tasks
 
 Run multi-iteration tasks with state persistence and resume. Good for batch processing, step-by-step feature builds, and code migrations.
 

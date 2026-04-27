@@ -1985,7 +1985,7 @@ def _load_config(config_path: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Feishu Bot for Claude Long-Runner",
+        description="Feishu Bot for Vurtnec Loom",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

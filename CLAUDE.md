@@ -4,11 +4,11 @@ This file is for AI agents working on this codebase. For human setup instruction
 
 ## Project Overview
 
-Claude Long-Runner is a Python framework built on the Claude Agent SDK for executing autonomous, multi-turn tasks. Three main capabilities:
+Vurtnec Loom is a Python framework built on the Claude Agent SDK (with Codex SDK as an alternate backend) for weaving AI agents into real workflows. Three main capabilities:
 
-1. **Long Runner** — iterative task executor with state persistence
+1. **Long-Run Tasks** — iterative task executor with state persistence
 2. **Scheduler** — cron-based daemon with multi-channel notifications
-3. **Feishu Bot** — interactive group chat bot with per-chat sessions
+3. **Feishu Bot** — interactive group chat bot with per-chat sessions, supporting both Claude and Codex backends
 
 ## Project Structure
 

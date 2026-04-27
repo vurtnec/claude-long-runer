@@ -472,7 +472,7 @@ class SchedulerDaemon:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Claude Long-Runner Scheduler Daemon",
+        description="Vurtnec Loom Scheduler Daemon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

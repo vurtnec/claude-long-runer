@@ -1,4 +1,4 @@
-# Contributing to Claude Long-Runner
+# Contributing to Vurtnec Loom
 
 Thank you for your interest in contributing! This guide will help you get started.
 
