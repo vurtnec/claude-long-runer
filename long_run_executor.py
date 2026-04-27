@@ -439,8 +439,8 @@ Examples:
     parser.add_argument(
         "--model",
         type=str,
-        default="claude-sonnet-4-5-20250929",
-        help="Claude model to use (default: claude-sonnet-4-5-20250929)",
+        default="claude-sonnet-4-6",
+        help="Claude model to use (default: claude-sonnet-4-6)",
     )
     parser.add_argument(
         "--effort",

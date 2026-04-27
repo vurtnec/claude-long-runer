@@ -17,6 +17,7 @@ class TriggerType(Enum):
     FILE_CHANGED = "file_changed"
     HTTP_CONDITION = "http_condition"
     COMPOSITE = "composite"
+    TEAMS_MESSAGE = "teams_message"
 
 
 class OverlapPolicy(Enum):
@@ -43,6 +44,13 @@ class TriggerConfig:
     # Composite fields
     operator: Optional[str] = None  # "and" | "or"
     triggers: List["TriggerConfig"] = field(default_factory=list)
+    # Teams message fields
+    chat_topic_contains: Optional[str] = None
+    chat_id: Optional[str] = None
+    sender_displayname: Optional[str] = None
+    content_pattern: Optional[str] = None
+    match_html: bool = True
+    exclude_self: bool = True
 
 
 @dataclass

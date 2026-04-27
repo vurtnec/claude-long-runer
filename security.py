@@ -70,6 +70,10 @@ BASE_ALLOWED_COMMANDS = {
     "false",
     "test",
     "[",
+    "diff",  # read-only file comparison
+    "bash",
+    "sh",
+    "zsh",
     # Environment & path utilities
     "which",
     "export",
@@ -180,6 +184,30 @@ def extract_commands(command_string: str) -> list[str]:
     # shlex doesn't treat ; as a separator, so we need to pre-process
     import re
 
+    # Pre-pass: extract subshell `$(...)` contents and recurse on them, then
+    # blank them out of the outer command. Without this, a command like
+    #   TOKEN=$(az account get-access-token ...)
+    # gets shlex-tokenised as ["TOKEN=$(az", "account", ...]; the second
+    # token is treated as a fresh command, blocking valid usage. Backtick
+    # subshells `…` are handled the same way.
+    subshell_inners: list[str] = []
+    # Iterate; the regex doesn't handle nested $( ) but that's rare in
+    # practice and we'd rather under-extract (fail safe) than over-extract.
+    _subshell_re = re.compile(r"\$\(([^()]*?)\)|`([^`]*?)`")
+    while True:
+        m = _subshell_re.search(command_string)
+        if not m:
+            break
+        inner = (m.group(1) if m.group(1) is not None else m.group(2)).strip()
+        if inner:
+            subshell_inners.append(inner)
+        command_string = (
+            command_string[: m.start()] + " " + command_string[m.end() :]
+        )
+
+    for inner in subshell_inners:
+        commands.extend(extract_commands(inner))
+
     # Split on semicolons that aren't inside quotes and aren't escaped (\;)
     # This handles common cases like "echo hello; ls"
     # but preserves find -exec ... \; patterns
@@ -204,6 +232,9 @@ def extract_commands(command_string: str) -> list[str]:
         expect_command = True
         # Track find -exec ... \; blocks — everything between -exec and \;/+ is find's args
         in_find_exec = False
+        # `for VAR in …` and `while/until <cond> do …` — skip the loop
+        # variable name and iteration values until we reach `do`.
+        skip_until_do = False
 
         for token in tokens:
             # Handle find -exec block: skip tokens until terminator
@@ -212,9 +243,29 @@ def extract_commands(command_string: str) -> list[str]:
                     in_find_exec = False
                 continue
 
+            # Stop on shell comment marker — everything after a bare `#`
+            # token is the rest-of-line comment, not commands. (URL fragments
+            # like `https://x#frag` survive: shlex keeps them as one token,
+            # so this only fires for true `# foo` comments.)
+            if token == "#" or (token.startswith("#") and len(token) > 1):
+                break
+
+            # In a for/while/until preamble — keep eating tokens until we
+            # hit the `do` that introduces the loop body.
+            if skip_until_do:
+                if token == "do":
+                    skip_until_do = False
+                    expect_command = True
+                continue
+
             # Shell operators indicate a new command follows
             if token in ("|", "||", "&&", "&"):
                 expect_command = True
+                continue
+
+            # for/while/until starts a loop preamble — skip until `do`
+            if token in ("for", "while", "until"):
+                skip_until_do = True
                 continue
 
             # Skip shell keywords that precede commands
@@ -224,9 +275,6 @@ def extract_commands(command_string: str) -> list[str]:
                 "else",
                 "elif",
                 "fi",
-                "for",
-                "while",
-                "until",
                 "do",
                 "done",
                 "case",

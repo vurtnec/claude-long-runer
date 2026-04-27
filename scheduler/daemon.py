@@ -165,7 +165,12 @@ class SchedulerDaemon:
             if once:
                 break
 
-            await asyncio.sleep(self.poll_interval)
+            # Sleep in 1-second ticks so Ctrl+C feels responsive instead of
+            # blocking up to `poll_interval` seconds on a single sleep call.
+            for _ in range(self.poll_interval):
+                if not self._running:
+                    break
+                await asyncio.sleep(1)
 
         # Cancel any running tasks on shutdown
         if self._active_tasks:
@@ -173,6 +178,16 @@ class SchedulerDaemon:
             for task in self._active_tasks.values():
                 task.cancel()
             await asyncio.gather(*self._active_tasks.values(), return_exceptions=True)
+
+        # Drop the Teams fetch pool — worker threads are daemon, so the
+        # process can exit even if a Graph call hasn't returned. Without
+        # this, an in-flight `requests.get` would block process exit until
+        # its 30s socket timeout fires.
+        try:
+            from .triggers.teams_trigger import _FETCH_POOL
+            _FETCH_POOL.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
         print("Scheduler daemon stopped.")
 
@@ -192,6 +207,10 @@ class SchedulerDaemon:
         now = datetime.now()
 
         for schedule in self.schedules:
+            # Check shutdown between schedules so Ctrl+C interrupts the
+            # cycle quickly instead of waiting for every trigger to evaluate.
+            if not self._running:
+                break
             if not schedule.enabled:
                 continue
 
@@ -200,8 +219,11 @@ class SchedulerDaemon:
                 if schedule.name in self._active_tasks:
                     continue
 
-            # Evaluate trigger
-            result = self.trigger_engine.evaluate(schedule.name)
+            # Evaluate trigger off the event loop so the loop stays responsive
+            # to signals (Ctrl+C) while a slow Graph/HTTP poll is in flight.
+            result = await asyncio.to_thread(
+                self.trigger_engine.evaluate, schedule.name
+            )
 
             if result.fired:
                 print(
@@ -325,7 +347,9 @@ class SchedulerDaemon:
             "schedule_name": schedule.name,
             "duration": duration_str,
             "iterations": iterations,
-            "last_response": last_response[:5000],  # Truncate for notifications
+            # 20000 chars (~10k 中文) covers a thorough Opus PR review.
+            # Feishu interactive cards comfortably handle this size.
+            "last_response": last_response[:20000],
             "status": "SUCCESS" if success else "FAILED",
             "error": error_msg or "",
             "date": today_str,

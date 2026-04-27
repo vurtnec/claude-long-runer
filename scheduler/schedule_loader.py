@@ -69,6 +69,12 @@ def parse_trigger_config(data: dict) -> TriggerConfig:
         condition=data.get("condition"),
         operator=data.get("operator"),
         triggers=sub_triggers,
+        chat_topic_contains=data.get("chat_topic_contains"),
+        chat_id=data.get("chat_id"),
+        sender_displayname=data.get("sender_displayname"),
+        content_pattern=data.get("content_pattern"),
+        match_html=data.get("match_html", True),
+        exclude_self=data.get("exclude_self", True),
     )
 
 

@@ -13,6 +13,7 @@ from .triggers.composite_trigger import CompositeTrigger
 from .triggers.cron_trigger import CronTrigger
 from .triggers.file_trigger import FileChangeTrigger
 from .triggers.http_trigger import HttpConditionTrigger
+from .triggers.teams_trigger import TeamsMessageTrigger
 
 
 def create_trigger(config: TriggerConfig) -> BaseTrigger:
@@ -26,6 +27,12 @@ def create_trigger(config: TriggerConfig) -> BaseTrigger:
         "headers": config.headers,
         "condition": config.condition,
         "operator": config.operator,
+        "chat_topic_contains": config.chat_topic_contains,
+        "chat_id": config.chat_id,
+        "sender_displayname": config.sender_displayname,
+        "content_pattern": config.content_pattern,
+        "match_html": config.match_html,
+        "exclude_self": config.exclude_self,
     }
 
     if config.type == TriggerType.CRON:
@@ -34,6 +41,8 @@ def create_trigger(config: TriggerConfig) -> BaseTrigger:
         return FileChangeTrigger(config_dict)
     elif config.type == TriggerType.HTTP_CONDITION:
         return HttpConditionTrigger(config_dict)
+    elif config.type == TriggerType.TEAMS_MESSAGE:
+        return TeamsMessageTrigger(config_dict)
     elif config.type == TriggerType.COMPOSITE:
         sub_triggers = [create_trigger(tc) for tc in config.triggers]
         return CompositeTrigger(config_dict, sub_triggers)
@@ -53,6 +62,10 @@ class TriggerEngine:
     def register(self, schedule: ScheduleDefinition):
         """Register a schedule's trigger for evaluation."""
         trigger = create_trigger(schedule.trigger)
+        # Tag the trigger with its owning schedule's name so stateful triggers
+        # (e.g. TeamsMessageTrigger watermarks) can namespace their state.
+        if hasattr(trigger, "owner_name"):
+            trigger.owner_name = schedule.name
         self._triggers[schedule.name] = trigger
 
     def evaluate(self, schedule_name: str) -> TriggerResult:

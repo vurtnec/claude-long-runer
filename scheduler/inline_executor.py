@@ -42,8 +42,30 @@ async def run_inline_task(
     print(f"\n  Inline task: sending prompt ({len(prompt)} chars)")
     print(f"  Model: {model}, Max turns: {max_turns}")
 
-    response_text = ""
+    # Track only the FINAL assistant answer (the tool-free closing message),
+    # not the running concatenation of every intermediate thought. Without
+    # this, downstream notifications get flooded with "Let me check…" /
+    # "Now I'll run…" prose and the actual answer is truncated off.
+    final_response = ""
+    # Buffer for the message currently being streamed
+    current_text = ""
+    current_has_tool_use = False
+    # Fallback: keep the last non-empty text we saw, in case the run ends
+    # without a clean tool-free message (e.g. max_turns exhausted mid-flight).
+    last_text_seen = ""
     turns_used = 0
+
+    def _flush_current():
+        nonlocal final_response, current_text, current_has_tool_use, last_text_seen
+        if current_text:
+            last_text_seen = current_text
+            if not current_has_tool_use:
+                # A pure-text assistant message — treat as the latest final
+                # answer. Later tool-using messages will not overwrite this
+                # unless they too produce a final tool-free message.
+                final_response = current_text
+        current_text = ""
+        current_has_tool_use = False
 
     try:
         client = create_client(project_dir, model, max_turns=max_turns, effort=effort)
@@ -59,13 +81,16 @@ async def run_inline_task(
 
                 # Handle AssistantMessage (text and tool use)
                 if msg_type == "AssistantMessage" and hasattr(msg, "content"):
+                    # Close out the previous assistant message before starting a new one
+                    _flush_current()
                     for block in msg.content:
                         block_type = type(block).__name__
 
                         if block_type == "TextBlock" and hasattr(block, "text"):
-                            response_text += block.text
+                            current_text += block.text
                             print(block.text, end="", flush=True)
                         elif block_type == "ToolUseBlock" and hasattr(block, "name"):
+                            current_has_tool_use = True
                             print(f"\n[Tool: {block.name}]", flush=True)
                             if hasattr(block, "input"):
                                 input_str = str(block.input)
@@ -91,19 +116,31 @@ async def run_inline_task(
                             else:
                                 print("   [Done]", flush=True)
 
+            # Flush whatever was in flight when the stream ended
+            _flush_current()
             print("\n" + "-" * 70 + "\n")
+
+        # If we never observed a clean closing message (e.g. run ended on a
+        # tool turn), fall back to the most recent text we did see so the
+        # notification isn't empty.
+        if not final_response:
+            final_response = last_text_seen
 
         return {
             "success": True,
-            "response_text": response_text,
+            "response_text": final_response,
             "turns_used": turns_used,
         }
 
     except Exception as e:
         print(f"  Inline task error: {e}")
+        # Even on error, prefer final answer text if any
+        _flush_current()
+        if not final_response:
+            final_response = last_text_seen
         return {
             "success": False,
-            "response_text": response_text,
+            "response_text": final_response,
             "turns_used": turns_used,
             "error": str(e),
         }
