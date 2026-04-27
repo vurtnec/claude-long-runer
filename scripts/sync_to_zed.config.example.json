@@ -1,0 +1,17 @@
+{
+  "_comment": [
+    "Project filter for scripts/sync_to_zed.py.",
+    "Copy this file to sync_to_zed.config.json (which is gitignored) and edit.",
+    "Each entry is matched EXACTLY against the cwd field stored in Claude session jsonl files.",
+    "  - Strings containing '/' or starting with '~' are treated as full paths.",
+    "  - Other strings are matched against the project's directory basename (case-insensitive).",
+    "An empty 'projects' list (or a missing config file) means sync ALL projects.",
+    "Override this list at runtime with: sync_to_zed.py -p PROJECT [-p PROJECT ...]",
+    "Or bypass with: sync_to_zed.py --all"
+  ],
+  "projects": [
+    "~/work/my-project-a",
+    "~/work/my-project-b",
+    "another-project-by-name"
+  ]
+}
