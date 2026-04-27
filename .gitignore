@@ -21,6 +21,10 @@ build/
 scheduler_config.yaml
 !scheduler_config.example.yaml
 
+# Sync-to-Zed config (contains personal project paths)
+scripts/sync_to_zed.config.json
+!scripts/sync_to_zed.config.example.json
+
 # State files (generated during execution)
 *_state.json
 scheduler_history.json
