@@ -23,9 +23,22 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-from claude_agent_sdk import ClaudeSDKClient
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeSDKClient,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
+)
+
+from client import create_client
+from security import set_task_allowed_commands
+from success_checker import SuccessChecker
+from state_manager import StateManager
+from task_config import TaskConfig
 
 
 class TeeLogger:
@@ -52,12 +65,6 @@ class TeeLogger:
 
     def close(self):
         self.log_file.close()
-
-from client import create_client
-from security import set_task_allowed_commands
-from success_checker import SuccessChecker
-from state_manager import StateManager
-from task_config import TaskConfig
 
 
 def load_processor(processor_path: Path):
@@ -105,33 +112,26 @@ async def run_agent_session(
         # Collect response text and show tool use
         response_text = ""
         async for msg in client.receive_response():
-            msg_type = type(msg).__name__
-
             # Handle AssistantMessage (text and tool use)
-            if msg_type == "AssistantMessage" and hasattr(msg, "content"):
+            if isinstance(msg, AssistantMessage):
                 for block in msg.content:
-                    block_type = type(block).__name__
-
-                    if block_type == "TextBlock" and hasattr(block, "text"):
+                    if isinstance(block, TextBlock):
                         response_text += block.text
                         print(block.text, end="", flush=True)
-                    elif block_type == "ToolUseBlock" and hasattr(block, "name"):
+                    elif isinstance(block, ToolUseBlock):
                         print(f"\n[Tool: {block.name}]", flush=True)
-                        if hasattr(block, "input"):
-                            input_str = str(block.input)
-                            if len(input_str) > 200:
-                                print(f"   Input: {input_str[:200]}...", flush=True)
-                            else:
-                                print(f"   Input: {input_str}", flush=True)
+                        input_str = str(block.input)
+                        if len(input_str) > 200:
+                            print(f"   Input: {input_str[:200]}...", flush=True)
+                        else:
+                            print(f"   Input: {input_str}", flush=True)
 
             # Handle UserMessage (tool results)
-            elif msg_type == "UserMessage" and hasattr(msg, "content"):
+            elif isinstance(msg, UserMessage):
                 for block in msg.content:
-                    block_type = type(block).__name__
-
-                    if block_type == "ToolResultBlock":
-                        result_content = getattr(block, "content", "")
-                        is_error = getattr(block, "is_error", False)
+                    if isinstance(block, ToolResultBlock):
+                        result_content = block.content if block.content is not None else ""
+                        is_error = block.is_error or False
 
                         # Check if command was blocked by security hook
                         if "blocked" in str(result_content).lower():
@@ -274,6 +274,8 @@ async def run_long_task(
 
     while iteration < max_iterations:
         iteration += 1
+        status: str = "error"
+        response: str = ""
         print("\n" + "=" * 70)
         print(f"  ITERATION {iteration}/{max_iterations}")
         print("=" * 70)
@@ -349,9 +351,9 @@ async def run_long_task(
             blocked_reason = state.data.get("blocked_reason", "Unknown")
             print(f"\n🛑 PIPELINE BLOCKED at Step {blocked_step}")
             print(f"   Reason: {blocked_reason}")
-            print(f"   After max retries + degraded attempt")
-            print(f"\n   Previous successful work saved via git checkpoint.")
-            print(f"   To resume after manual fix, edit the state file and set phase='implementing'")
+            print("   After max retries + degraded attempt")
+            print("\n   Previous successful work saved via git checkpoint.")
+            print("   To resume after manual fix, edit the state file and set phase='implementing'")
             break
 
         # Check success conditions

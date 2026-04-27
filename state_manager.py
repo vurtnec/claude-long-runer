@@ -8,7 +8,7 @@ Tracks iteration progress, task status, and custom state data.
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 class StateManager:
@@ -71,7 +71,7 @@ class StateManager:
             "status": "pending",
             "last_response": "",
         }
-        print(f"Initialized new state (will be saved after __init__)")
+        print("Initialized new state (will be saved after __init__)")
         return state
 
     def save(self) -> None:
