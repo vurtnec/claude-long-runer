@@ -36,19 +36,21 @@ class ClaudeAgentClient:
 
     # ── Features supported by this backend ───────────────────────────────
 
-    _SUPPORTED_FEATURES = frozenset({
-        Feature.PERMISSION_MODE,
-        Feature.SESSION_RESUME,
-        Feature.STREAMING,
-        Feature.INTERRUPT,
-        Feature.MCP_SERVERS,
-        Feature.SECURITY_HOOKS,
-    })
+    _SUPPORTED_FEATURES = frozenset(
+        {
+            Feature.PERMISSION_MODE,
+            Feature.SESSION_RESUME,
+            Feature.STREAMING,
+            Feature.INTERRUPT,
+            Feature.MCP_SERVERS,
+            Feature.SECURITY_HOOKS,
+        }
+    )
 
     def __init__(
         self,
         project_dir: str | None = None,
-        model: str = "claude-sonnet-4-5-20250929",
+        model: str = "claude-opus-4-7",
         permission_mode: str | None = None,
         resume: str | None = None,
         restricted: bool = False,

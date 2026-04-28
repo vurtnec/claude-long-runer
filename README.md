@@ -105,7 +105,7 @@ python long_run_executor.py \
 | `--params` | JSON params for the task |
 | `--project-dir` | Working directory (default: `.`) |
 | `--max-iterations` | Max iterations (default: 5) |
-| `--model` | Claude model (default: claude-sonnet-4-5-20250929) |
+| `--model` | Claude model (default: claude-opus-4-7) |
 | `--resume` | Resume from last saved state |
 
 **Built-in templates:**
@@ -143,7 +143,7 @@ trigger:
 task:
   type: inline
   prompt: "Today is {{today}}. Summarize market highlights and tech news."
-  model: "claude-sonnet-4-5-20250929"
+  model: "claude-opus-4-7"
   max_turns: 3
 notifications:
   on_success:

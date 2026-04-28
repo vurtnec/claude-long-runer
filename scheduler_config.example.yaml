@@ -3,8 +3,8 @@
 # Copy this file to scheduler_config.yaml and configure your settings.
 
 daemon:
-  poll_interval_seconds: 30       # How often to check triggers
-  schedules_dir: "schedules"      # Directory containing schedule YAML files
+  poll_interval_seconds: 30 # How often to check triggers
+  schedules_dir: "schedules" # Directory containing schedule YAML files
 
 # Notification service credentials
 notifications:
@@ -47,15 +47,20 @@ history:
 # Default values for all scheduled tasks (overridable per schedule)
 defaults:
   model: "claude-opus-4-7"
-  effort: "xhigh"                   # Thinking depth: low, medium, high, xhigh, max (omit to use CLI default)
+  effort: "xhigh" # Thinking depth: low, medium, high, xhigh, max (omit to use CLI default)
   max_iterations: 10
   timeout_minutes: 120
 
 # Feishu bot settings (for receiving messages and triggering tasks)
 feishu_bot:
-  enabled: true                     # Start bot alongside daemon
+  enabled: true # Start bot alongside daemon
   model: "claude-opus-4-7"
-  effort: "xhigh"                   # Default effort for bot sessions (omit to use CLI default)
+  effort: "xhigh" # Default effort for bot sessions (omit to use CLI default)
+  # Default permission mode for new bot sessions when /mode is not used.
+  # Friendly aliases: plan | ask | auto | edits
+  # Or raw SDK values: default | acceptEdits | plan | auto | bypassPermissions | dontAsk
+  # `auto` lets the SDK decide which actions need confirmation (recommended).
+  mode: "auto"
   max_turns: 10
   # allowed_user_ids: []            # Empty = allow all; add open_ids to restrict
 
@@ -66,12 +71,12 @@ feishu_bot:
   #     alias:
   #       path: "/path/to/project"
   #       restricted: true           # Restrict bash commands to paths within the project directory
-  #       model: "claude-sonnet-4-5-20250929"  # Default model for this project (inherits global if unset)
+  #       model: "claude-opus-4-7"  # Default model for this project (inherits global if unset)
   projects:
     my-project:
       path: "/path/to/your/project"
-      restricted: true               # Enable directory restriction
-      model: "claude-sonnet-4-5-20250929"
-      effort: "high"                 # Per-project effort level
-    another: "/path/to/another/project"   # Legacy format, no restriction, inherits global model
-  default_project: "my-project"     # Default project alias
+      restricted: true # Enable directory restriction
+      model: "claude-opus-4-7"
+      effort: "high" # Per-project effort level
+    another: "/path/to/another/project" # Legacy format, no restriction, inherits global model
+  default_project: "my-project" # Default project alias

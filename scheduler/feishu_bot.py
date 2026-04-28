@@ -41,27 +41,47 @@ from lark_oapi.api.im.v1 import (
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )
+from lark_oapi.event.callback.model.p2_card_action_trigger import (
+    P2CardActionTriggerResponse,
+)
 
 # Add parent directory for imports from the existing codebase
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import yaml
 
-from agent_protocol import AgentClient, AgentEvent, EventType, Feature, create_agent_client
+from agent_protocol import (
+    AgentClient,
+    AgentEvent,
+    EventType,
+    Feature,
+    create_agent_client,
+)
 from client import create_client  # kept for backward compat (schedule execution)
 
+from .feishu_cards import (
+    ACTION_BACKEND,
+    ACTION_EFFORT,
+    ACTION_KEY,
+    ACTION_MODE,
+    ACTION_MODEL,
+    ACTION_PROJECT,
+    ACTION_RESUME,
+    ACTION_SCHEDULE,
+    build_select_card,
+    truncate,
+)
 from .schedule_loader import load_all_schedules, resolve_env_vars
-
 
 # Session timeout: auto-disconnect after prolonged inactivity (only resets on restart)
 SESSION_TIMEOUT_SECONDS = 50 * 60 * 60
 
 # Mode aliases: user-friendly names → SDK permission_mode values
 MODE_ALIASES = {
-    "plan": "plan",             # Plan — suggest only, no execution
-    "ask": "default",           # Ask before edits
-    "auto": "auto",             # Auto-determine permissions (new in SDK 0.1.60)
-    "edits": "acceptEdits",     # Auto-accept file edits (previously named 'auto')
+    "plan": "plan",  # Plan — suggest only, no execution
+    "ask": "default",  # Ask before edits
+    "auto": "auto",  # Auto-determine permissions (new in SDK 0.1.60)
+    "edits": "acceptEdits",  # Auto-accept file edits (previously named 'auto')
 }
 
 # Reverse mapping for display: SDK permission_mode → user-friendly name
@@ -80,11 +100,11 @@ BACKEND_ALIASES = {"claude", "codex"}
 
 CODEX_MODEL_ALIASES = {
     # Verified via codex.models() — 2026-04
-    "gpt-5.5":       "gpt-5.5",          # default frontier
-    "gpt-5.4":       "gpt-5.4",
-    "gpt-5.4-mini":  "gpt-5.4-mini",
+    "gpt-5.5": "gpt-5.5",  # default frontier
+    "gpt-5.4": "gpt-5.4",
+    "gpt-5.4-mini": "gpt-5.4-mini",
     "gpt-5.3-codex": "gpt-5.3-codex",
-    "gpt-5.2":       "gpt-5.2",
+    "gpt-5.2": "gpt-5.2",
 }
 CODEX_MODEL_DISPLAY = {v: k for k, v in CODEX_MODEL_ALIASES.items()}
 
@@ -130,7 +150,9 @@ class ChatSession:
         # Progress tracking for /status command
         self.working_since: datetime | None = None  # set when agent starts processing
         self.tool_count: int = 0
-        self.recent_tools: list[dict] = []  # last 5: [{"name": "Edit", "input": "file.py ..."}]
+        self.recent_tools: list[
+            dict
+        ] = []  # last 5: [{"name": "Edit", "input": "file.py ..."}]
 
     async def connect(self):
         """Establish connection to Claude."""
@@ -188,19 +210,26 @@ class FeishuBotServer:
         bot_config = config.get("feishu_bot", {})
         self.default_model = bot_config.get(
             "model",
-            config.get("defaults", {}).get("model", "claude-sonnet-4-5-20250929"),
+            config.get("defaults", {}).get("model", "claude-opus-4-7"),
         )
         self.default_effort: str | None = bot_config.get(
             "effort",
             config.get("defaults", {}).get("effort"),
         )
         self.default_backend: str = bot_config.get("default_backend", "claude")
+        # Default permission mode applied to new sessions when the user
+        # hasn't called /mode in the chat.  Accepts either the friendly
+        # alias (plan/ask/auto/edits) or the raw SDK value
+        # (default/acceptEdits/plan/auto/bypassPermissions/dontAsk).
+        # See PermissionMode in claude_agent_sdk/types.py.
+        _raw_mode = bot_config.get("mode", config.get("defaults", {}).get("mode", "auto"))
+        self.default_mode: str = MODE_ALIASES.get(_raw_mode, _raw_mode)
         # Projects: alias → absolute path, with per-project settings
         self.projects: Dict[str, Path] = {}
-        self._project_restricted: Dict[str, bool] = {}   # alias → restricted flag
-        self._project_models: Dict[str, str] = {}         # alias → default model
-        self._project_efforts: Dict[str, str] = {}        # alias → default effort
-        self._project_backends: Dict[str, str] = {}       # alias → default backend
+        self._project_restricted: Dict[str, bool] = {}  # alias → restricted flag
+        self._project_models: Dict[str, str] = {}  # alias → default model
+        self._project_efforts: Dict[str, str] = {}  # alias → default effort
+        self._project_backends: Dict[str, str] = {}  # alias → default backend
         for alias, value in bot_config.get("projects", {}).items():
             if isinstance(value, str):
                 # Legacy format: plain path string
@@ -240,11 +269,13 @@ class FeishuBotServer:
                 self.schedules[s.name] = s
 
         # Lark API client (for sending messages)
-        self.lark_client = lark.Client.builder() \
-            .app_id(self.app_id) \
-            .app_secret(self.app_secret) \
-            .log_level(lark.LogLevel.INFO) \
+        self.lark_client = (
+            lark.Client.builder()
+            .app_id(self.app_id)
+            .app_secret(self.app_secret)
+            .log_level(lark.LogLevel.INFO)
             .build()
+        )
 
         # Per-chat sessions and project selection
         self._sessions: Dict[str, ChatSession] = {}
@@ -252,7 +283,9 @@ class FeishuBotServer:
         self._chat_models: Dict[str, str] = {}  # chat_id → model ID
         self._chat_efforts: Dict[str, str] = {}  # chat_id → effort level
         self._chat_modes: Dict[str, str] = {}  # chat_id → permission mode
-        self._chat_backends: Dict[str, str] = {}  # chat_id → backend ("claude" or "codex")
+        self._chat_backends: Dict[
+            str, str
+        ] = {}  # chat_id → backend ("claude" or "codex")
 
         # Pending images: buffer images until user sends a text message
         self._pending_images: Dict[str, List[str]] = {}  # chat_id → [image_file_paths]
@@ -276,9 +309,12 @@ class FeishuBotServer:
         self._loop = loop or asyncio.new_event_loop()
 
         # Build event handler
-        event_handler = lark.EventDispatcherHandler.builder("", "") \
-            .register_p2_im_message_receive_v1(self._on_message_received) \
+        event_handler = (
+            lark.EventDispatcherHandler.builder("", "")
+            .register_p2_im_message_receive_v1(self._on_message_received)
+            .register_p2_card_action_trigger(self._on_card_action)
             .build()
+        )
 
         # Build WebSocket client
         ws_client = lark.ws.Client(
@@ -291,6 +327,7 @@ class FeishuBotServer:
         print(f"Starting Feishu bot (WebSocket long connection)...")
         print(f"  App ID: {self.app_id[:8]}...")
         print(f"  Default model: {self.default_model}")
+        print(f"  Default mode:  {MODE_DISPLAY.get(self.default_mode, self.default_mode)} ({self.default_mode})")
         if self.projects:
             print(f"  Projects:")
             for alias, path in self.projects.items():
@@ -319,6 +356,7 @@ class FeishuBotServer:
         # in the background thread to avoid "This event loop is already running".
         def _run_ws():
             import lark_oapi.ws.client as ws_module
+
             new_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(new_loop)
             ws_module.loop = new_loop  # Patch the module-level loop
@@ -330,11 +368,13 @@ class FeishuBotServer:
             # bypass the proxy.  This only affects Python code in this process;
             # curl subprocesses used by notifiers are unaffected.
             import os
+
             os.environ.setdefault("no_proxy", "*")
 
             # Also patch the SDK's requests reference to a no-proxy session
             # in case the env var is read too late by urllib.
             import requests as _req
+
             _no_proxy_session = _req.Session()
             _no_proxy_session.trust_env = False
             ws_module.requests = _no_proxy_session
@@ -397,7 +437,9 @@ class FeishuBotServer:
             if not text:
                 return
 
-            print(f"\n[Feishu Bot] Received: \"{text}\" (from {sender_id}, chat {chat_id[:8]}...)")
+            print(
+                f'\n[Feishu Bot] Received: "{text}" (from {sender_id}, chat {chat_id[:8]}...)'
+            )
 
             # Route the message
             if text.startswith("/"):
@@ -409,13 +451,167 @@ class FeishuBotServer:
             print(f"[Feishu Bot] Error handling message: {e}")
             traceback.print_exc()
 
+    def _on_card_action(self, event):
+        """Handle card action callbacks (dropdown selections etc.).
+
+        Routes by ``event.event.action.name`` to the same handlers used by
+        slash commands.  The dropdown's ``option`` (selected value) is
+        passed as the ``arg`` parameter, so handlers don't need to know
+        whether they were invoked from text or a card click.
+
+        Returns a ``P2CardActionTriggerResponse`` carrying a toast for
+        instant feedback; the actual switch / resume / trigger work is
+        scheduled async by the routed handler and produces a follow-up
+        message in the chat.
+        """
+        try:
+            inner = event.event
+            action = getattr(inner, "action", None)
+            context = getattr(inner, "context", None)
+
+            # Diagnostic dump of the entire event for debugging field-name
+            # drift across lark-oapi versions / card schema 2.0.
+            try:
+                raw = lark.JSON.marshal(inner)
+                print(f"\n[Feishu Bot] Card action raw event: {raw}")
+            except Exception:
+                pass
+
+            chat_id = getattr(context, "open_chat_id", None) if context else None
+            message_id = getattr(context, "open_message_id", None) if context else None
+            operator = getattr(inner, "operator", None)
+            sender_open_id = getattr(operator, "open_id", None) if operator else None
+
+            # Routing key: card schema 2.0 only echoes back the ``name``
+            # attribute when the component sits in a form container, so we
+            # read the key from ``action.value[ACTION_KEY]`` (always
+            # present — we put it there in build_select_card) and fall
+            # back to ``action.name`` for backward compat.
+            action_value_dict = getattr(action, "value", None) if action else None
+            action_name = ""
+            if isinstance(action_value_dict, dict):
+                v = action_value_dict.get(ACTION_KEY)
+                if v:
+                    action_name = str(v).strip()
+            if not action_name and action:
+                action_name = (getattr(action, "name", "") or "").strip()
+
+            # Selected value: ``action.option`` is the single-select picked
+            # value in card schema 2.0.  Fall back to ``input_value`` for
+            # input components.
+            selected = ""
+            if action:
+                opt = getattr(action, "option", None)
+                if opt:
+                    selected = str(opt).strip()
+                if not selected:
+                    inp = getattr(action, "input_value", None)
+                    if inp:
+                        selected = str(inp).strip()
+
+            print(
+                f"[Feishu Bot] Card action parsed: name='{action_name}' "
+                f"option='{selected}' chat={chat_id[:8] if chat_id else '?'}... "
+                f"msg={message_id[:8] if message_id else '?'}..."
+            )
+
+            # Whitelist check — same rule as text messages.  No-op when no
+            # whitelist is configured.
+            if (
+                self.allowed_user_ids
+                and sender_open_id
+                and sender_open_id not in self.allowed_user_ids
+            ):
+                print(
+                    f"  Ignoring card action from non-whitelisted user: {sender_open_id}"
+                )
+                return P2CardActionTriggerResponse(
+                    {"toast": {"type": "error", "content": "Not authorized."}}
+                )
+
+            # Diagnose which specific field is missing instead of a generic
+            # "invalid payload" — makes future drift easy to spot in logs.
+            missing = []
+            if not chat_id:
+                missing.append("chat_id")
+            if not message_id:
+                missing.append("message_id")
+            if not action_name:
+                missing.append("action.name")
+            if not selected:
+                missing.append("action.option")
+            if missing:
+                msg = f"Missing card fields: {', '.join(missing)}"
+                print(f"  [Feishu Bot] {msg}")
+                return P2CardActionTriggerResponse(
+                    {"toast": {"type": "error", "content": msg}}
+                )
+
+            # Route by component name — same `name` constants used by
+            # build_select_card() in feishu_cards.py.
+            if action_name == ACTION_PROJECT:
+                self._handle_project(selected, chat_id, message_id)
+                toast_text = f"Switching to project: {selected}"
+            elif action_name == ACTION_MODE:
+                self._handle_mode(selected, chat_id, message_id)
+                toast_text = f"Switching mode: {selected}"
+            elif action_name == ACTION_RESUME:
+                self._handle_resume(selected, chat_id, message_id)
+                toast_text = "Resuming session…"
+            elif action_name == ACTION_SCHEDULE:
+                self._trigger_schedule(selected, chat_id, message_id)
+                toast_text = f"Triggering: {selected}"
+            elif action_name == ACTION_BACKEND:
+                self._handle_backend(selected, chat_id, message_id)
+                toast_text = f"Switching backend: {selected}"
+            elif action_name == ACTION_MODEL:
+                self._handle_model(selected, chat_id, message_id)
+                toast_text = f"Switching model: {selected}"
+            elif action_name == ACTION_EFFORT:
+                self._handle_effort(selected, chat_id, message_id)
+                toast_text = f"Switching effort: {selected}"
+            else:
+                print(f"  [Feishu Bot] Unknown card action name: {action_name}")
+                return P2CardActionTriggerResponse(
+                    {
+                        "toast": {
+                            "type": "error",
+                            "content": f"Unknown action: {action_name}",
+                        }
+                    }
+                )
+
+            return P2CardActionTriggerResponse(
+                {"toast": {"type": "info", "content": toast_text}}
+            )
+
+        except Exception as e:
+            print(f"[Feishu Bot] Error handling card action: {e}")
+            traceback.print_exc()
+            return P2CardActionTriggerResponse(
+                {"toast": {"type": "error", "content": f"Error: {e}"}}
+            )
+
     # Bot's own slash commands — anything else gets forwarded to the agent
     # (so users can run Claude/Codex custom slash commands like /init, /commit, etc.)
-    BOT_COMMANDS = frozenset({
-        "/help", "/list", "/new", "/stop", "/cancel", "/status",
-        "/project", "/mode", "/model", "/effort", "/backend",
-        "/rename", "/resume", "/run",
-    })
+    BOT_COMMANDS = frozenset(
+        {
+            "/help",
+            "/list",
+            "/new",
+            "/stop",
+            "/cancel",
+            "/status",
+            "/project",
+            "/mode",
+            "/model",
+            "/effort",
+            "/backend",
+            "/rename",
+            "/resume",
+            "/run",
+        }
+    )
 
     def _handle_command(self, text: str, chat_id: str, message_id: str):
         """
@@ -490,9 +686,7 @@ class FeishuBotServer:
         self._pending_images.pop(chat_id, None)
 
         if self._loop and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                self._close_session(chat_id), self._loop
-            )
+            asyncio.run_coroutine_threadsafe(self._close_session(chat_id), self._loop)
         self._reply_text(
             message_id,
             "Session reset. Next message starts a new conversation.\n"
@@ -521,7 +715,9 @@ class FeishuBotServer:
             return
         try:
             session.client.interrupt()
-            self._reply_text(message_id, "Request interrupted. You can send a new message.")
+            self._reply_text(
+                message_id, "Request interrupted. You can send a new message."
+            )
         except Exception as e:
             self._reply_text(message_id, f"Failed to interrupt: {e}")
 
@@ -533,16 +729,22 @@ class FeishuBotServer:
             return
 
         if not session.lock.locked() or not session.working_since:
-            mode_display = MODE_DISPLAY.get(session.permission_mode, session.permission_mode)
+            mode_display = MODE_DISPLAY.get(
+                session.permission_mode, session.permission_mode
+            )
             self._reply_text(message_id, f"Idle. ({mode_display} mode)")
             return
 
         elapsed = (datetime.now() - session.working_since).total_seconds()
         mins = int(elapsed // 60)
         secs = int(elapsed % 60)
-        mode_display = MODE_DISPLAY.get(session.permission_mode, session.permission_mode)
+        mode_display = MODE_DISPLAY.get(
+            session.permission_mode, session.permission_mode
+        )
 
-        lines = [f"Working for {mins}m{secs}s | {session.tool_count} tool calls | {mode_display} mode\n"]
+        lines = [
+            f"Working for {mins}m{secs}s | {session.tool_count} tool calls | {mode_display} mode\n"
+        ]
         if session.recent_tools:
             lines.append("Recent tools:")
             for t in session.recent_tools:
@@ -566,7 +768,9 @@ class FeishuBotServer:
             return
 
         if alias is None:
-            # Show current project and available list
+            # Send a dropdown card so the user can pick.  The text-form
+            # ``/project <alias>`` flow still works (handled by the
+            # branch below).
             current_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
             current_alias = None
             for a, p in self.projects.items():
@@ -574,13 +778,28 @@ class FeishuBotServer:
                     current_alias = a
                     break
 
-            lines = [f"Current project: {current_alias or current_dir}\n"]
-            lines.append("Available projects:")
+            options = []
             for a, p in self.projects.items():
-                marker = " <--" if p == current_dir else ""
-                lines.append(f"  {a}: {p}{marker}")
-            lines.append(f"\nUsage: /project <alias>")
-            self._reply_text(message_id, "\n".join(lines))
+                marker = "  ← current" if p == current_dir else ""
+                options.append({"text": f"{a}{marker}", "value": a})
+
+            intro = (
+                f"**Current project:** `{current_alias or current_dir}`\n\n"
+                f"Pick a project to switch to:"
+            )
+            card_json = build_select_card(
+                intro_markdown=intro,
+                placeholder="Select a project…",
+                options=options,
+                action_name=ACTION_PROJECT,
+                initial_value=current_alias,
+            )
+            fallback = (
+                f"Current project: {current_alias or current_dir}\n"
+                + "Available: "
+                + ", ".join(self.projects.keys())
+            )
+            self._reply_card_json(message_id, card_json, fallback_text=fallback)
             return
 
         if alias not in self.projects:
@@ -606,7 +825,9 @@ class FeishuBotServer:
             f"Switched to project: {alias}\n{new_dir}\n\nSession reset. Next message uses the new project context.",
         )
 
-    def _handle_image_message(self, message, chat_id: str, message_id: str, sender_id: str):
+    def _handle_image_message(
+        self, message, chat_id: str, message_id: str, sender_id: str
+    ):
         """Handle image message: download, save locally, and buffer for next text message."""
         try:
             content = json.loads(message.content)
@@ -615,12 +836,16 @@ class FeishuBotServer:
                 print(f"  [Feishu Bot] Image message without image_key, skipping")
                 return
 
-            print(f"\n[Feishu Bot] Received image (from {sender_id}, chat {chat_id[:8]}...)")
+            print(
+                f"\n[Feishu Bot] Received image (from {sender_id}, chat {chat_id[:8]}...)"
+            )
 
             # Download and save image
             image_path = self._download_and_save_image(message_id, image_key)
             if not image_path:
-                self._reply_text(message_id, "Failed to download image. Please try again.")
+                self._reply_text(
+                    message_id, "Failed to download image. Please try again."
+                )
                 return
 
             # Buffer the image path for this chat
@@ -630,9 +855,14 @@ class FeishuBotServer:
 
             count = len(self._pending_images[chat_id])
             if count == 1:
-                self._reply_text(message_id, "Image received. What would you like me to do with it?")
+                self._reply_text(
+                    message_id, "Image received. What would you like me to do with it?"
+                )
             else:
-                self._reply_text(message_id, f"{count} images received. What would you like me to do with them?")
+                self._reply_text(
+                    message_id,
+                    f"{count} images received. What would you like me to do with them?",
+                )
 
             print(f"  [Feishu Bot] Image saved: {image_path} (pending: {count})")
 
@@ -641,19 +871,25 @@ class FeishuBotServer:
             traceback.print_exc()
             self._reply_text(message_id, "Failed to process image. Please try again.")
 
-    def _download_and_save_image(self, message_id: str, image_key: str) -> Optional[str]:
+    def _download_and_save_image(
+        self, message_id: str, image_key: str
+    ) -> Optional[str]:
         """Download image from Feishu message and save to tmp_images/ directory."""
         try:
-            request = GetMessageResourceRequest.builder() \
-                .message_id(message_id) \
-                .file_key(image_key) \
-                .type("image") \
+            request = (
+                GetMessageResourceRequest.builder()
+                .message_id(message_id)
+                .file_key(image_key)
+                .type("image")
                 .build()
+            )
 
             response = self.lark_client.im.v1.message_resource.get(request)
 
             if not response.success():
-                print(f"  [Feishu Bot] Image download failed: {response.code} - {response.msg}")
+                print(
+                    f"  [Feishu Bot] Image download failed: {response.code} - {response.msg}"
+                )
                 return None
 
             # Determine file extension from response filename or default to .png
@@ -773,7 +1009,7 @@ class FeishuBotServer:
         else:
             effort = self.default_effort
 
-        mode = self._chat_modes.get(chat_id)
+        mode = self._chat_modes.get(chat_id, self.default_mode)
         restricted = self._project_restricted.get(project_alias or "", False)
 
         # Backend priority: user /backend override > per-project backend > global default
@@ -785,13 +1021,17 @@ class FeishuBotServer:
             backend = self.default_backend
 
         # If model was never explicitly set and backend changed, use backend's default model
-        if chat_id not in self._chat_models and (not project_alias or project_alias not in self._project_models):
+        if chat_id not in self._chat_models and (
+            not project_alias or project_alias not in self._project_models
+        ):
             model = BACKEND_DEFAULT_MODELS.get(backend, model)
 
         # Create new session
         restriction_tag = " [RESTRICTED]" if restricted else ""
         effort_tag = f", effort: {effort}" if effort else ""
-        print(f"  [Session] Creating new session for chat {chat_id[:8]}... (backend: {backend}, project: {project_dir}, model: {model}, mode: {mode or 'default'}{effort_tag}{restriction_tag})")
+        print(
+            f"  [Session] Creating new session for chat {chat_id[:8]}... (backend: {backend}, project: {project_dir}, model: {model}, mode: {mode or 'default'}{effort_tag}{restriction_tag})"
+        )
         client = create_agent_client(
             backend=backend,
             project_dir=str(project_dir),
@@ -819,9 +1059,7 @@ class FeishuBotServer:
 
     async def _cleanup_stale_sessions(self):
         """Remove sessions that have been inactive for too long."""
-        stale_ids = [
-            cid for cid, s in self._sessions.items() if s.is_stale()
-        ]
+        stale_ids = [cid for cid, s in self._sessions.items() if s.is_stale()]
         for cid in stale_ids:
             print(f"  [Session] Cleaning up stale session: {cid[:8]}...")
             await self._close_session(cid)
@@ -845,7 +1083,6 @@ class FeishuBotServer:
                 response_text = ""
                 exit_plan_attempted = False
                 async for event in session.client.receive_events():
-
                     if event.type == EventType.TEXT:
                         response_text += event.text
                         print(event.text, end="", flush=True)
@@ -864,7 +1101,9 @@ class FeishuBotServer:
                             input_summary = str(event.tool_input)
                             if len(input_summary) > 80:
                                 input_summary = input_summary[:80] + "..."
-                        session.recent_tools.append({"name": event.tool_name, "input": input_summary})
+                        session.recent_tools.append(
+                            {"name": event.tool_name, "input": input_summary}
+                        )
                         if len(session.recent_tools) > 5:
                             session.recent_tools = session.recent_tools[-5:]
                         print(f"\n[Tool: {event.tool_name}]", flush=True)
@@ -891,7 +1130,9 @@ class FeishuBotServer:
                         init_session_id = event.metadata.get("session_id")
                         if init_session_id:
                             session.session_id = init_session_id
-                        print(f"  [System] mode={init_mode}, session={init_session_id and init_session_id[:8]}...")
+                        print(
+                            f"  [System] mode={init_mode}, session={init_session_id and init_session_id[:8]}..."
+                        )
 
                     elif event.type == EventType.RESULT:
                         num_turns = event.metadata.get("num_turns", "?")
@@ -899,7 +1140,9 @@ class FeishuBotServer:
                         result_session_id = event.metadata.get("session_id")
                         if result_session_id:
                             session.session_id = result_session_id
-                        print(f"\n  [Result] turns={num_turns}, error={is_error}, session={session.session_id and session.session_id[:8]}...")
+                        print(
+                            f"\n  [Result] turns={num_turns}, error={is_error}, session={session.session_id and session.session_id[:8]}..."
+                        )
 
                     elif event.type == EventType.ERROR:
                         error_msg = event.metadata.get("error", "Unknown error")
@@ -922,7 +1165,9 @@ class FeishuBotServer:
             duration_str = str(duration).split(".")[0]
 
             # Build mode display string
-            mode_display = MODE_DISPLAY.get(session.permission_mode, session.permission_mode)
+            mode_display = MODE_DISPLAY.get(
+                session.permission_mode, session.permission_mode
+            )
 
             if response_text:
                 # Truncate for Feishu's message size limit
@@ -984,8 +1229,13 @@ class FeishuBotServer:
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(
                     self._execute_schedule_and_reply(
-                        prompt, project_dir, model, chat_id, schedule_name,
-                        timeout, max_turns
+                        prompt,
+                        project_dir,
+                        model,
+                        chat_id,
+                        schedule_name,
+                        timeout,
+                        max_turns,
                     ),
                     self._loop,
                 )
@@ -993,8 +1243,13 @@ class FeishuBotServer:
                 thread = threading.Thread(
                     target=lambda: asyncio.run(
                         self._execute_schedule_and_reply(
-                            prompt, project_dir, model, chat_id, schedule_name,
-                            timeout, max_turns
+                            prompt,
+                            project_dir,
+                            model,
+                            chat_id,
+                            schedule_name,
+                            timeout,
+                            max_turns,
                         )
                     ),
                     daemon=True,
@@ -1020,8 +1275,14 @@ class FeishuBotServer:
             thread = threading.Thread(
                 target=lambda: asyncio.run(
                     self._execute_standard_and_reply(
-                        schedule.task.name, resolved_params, project_dir,
-                        model, max_iters, chat_id, schedule_name, timeout
+                        schedule.task.name,
+                        resolved_params,
+                        project_dir,
+                        model,
+                        max_iters,
+                        chat_id,
+                        schedule_name,
+                        timeout,
                     )
                 ),
                 daemon=True,
@@ -1131,7 +1392,9 @@ class FeishuBotServer:
                     pass
 
             if success:
-                summary = last_response[:3000] if last_response else "No response captured"
+                summary = (
+                    last_response[:3000] if last_response else "No response captured"
+                )
                 reply = (
                     f"[{schedule_name}] Task completed successfully\n"
                     f"Iterations: {iterations} | Duration: {duration_str}\n\n"
@@ -1191,17 +1454,33 @@ class FeishuBotServer:
         self._reply_text(message_id, help_text)
 
     def _send_schedule_list(self, chat_id: str, message_id: str):
-        """Send list of available schedules."""
+        """Send a dropdown card listing available schedules.
+
+        Picking an option triggers ``_trigger_schedule`` for that name
+        via the card-action callback, replacing the old two-step
+        ``/list`` then ``/run <name>`` flow.
+        """
         if not self.schedules:
             self._reply_text(message_id, "No schedules loaded.")
             return
 
-        lines = ["Available schedules:\n"]
+        options = []
         for name, sched in self.schedules.items():
-            lines.append(f"  {name} - {sched.description}")
-        lines.append(f"\nUsage: /run <name>")
+            desc = truncate(sched.description or "", 35)
+            label = f"{name} — {desc}" if desc else name
+            options.append({"text": label, "value": name})
 
-        self._reply_text(message_id, "\n".join(lines))
+        intro = (
+            f"**Schedules** _(loaded: {len(self.schedules)})_\n\nPick one to run now:"
+        )
+        card_json = build_select_card(
+            intro_markdown=intro,
+            placeholder="Select a schedule…",
+            options=options,
+            action_name=ACTION_SCHEDULE,
+        )
+        fallback = "Available schedules: " + ", ".join(self.schedules.keys())
+        self._reply_card_json(message_id, card_json, fallback_text=fallback)
 
     # ── Card builder (schema 2.0 — full Markdown support) ──────────────
 
@@ -1230,45 +1509,81 @@ class FeishuBotServer:
 
     def _reply_text(self, message_id: str, text: str):
         """Reply to a specific message with interactive card (Markdown rendered)."""
-        request = ReplyMessageRequest.builder() \
-            .message_id(message_id) \
+        request = (
+            ReplyMessageRequest.builder()
+            .message_id(message_id)
             .request_body(
                 ReplyMessageRequestBody.builder()
                 .msg_type("interactive")
                 .content(self._build_interactive_card(text))
                 .build()
-            ).build()
+            )
+            .build()
+        )
 
         response = self.lark_client.im.v1.message.reply(request)
         if not response.success():
             print(f"  [Feishu Bot] Reply failed: {response.code} - {response.msg}")
             self._reply_plain_text(message_id, text)
 
+    def _reply_card_json(
+        self, message_id: str, card_json: str, fallback_text: str = ""
+    ):
+        """Reply with a prebuilt interactive card JSON (e.g. from feishu_cards).
+
+        Falls back to plain text if the card send fails.
+        """
+        request = (
+            ReplyMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                ReplyMessageRequestBody.builder()
+                .msg_type("interactive")
+                .content(card_json)
+                .build()
+            )
+            .build()
+        )
+
+        response = self.lark_client.im.v1.message.reply(request)
+        if not response.success():
+            print(f"  [Feishu Bot] Card reply failed: {response.code} - {response.msg}")
+            if fallback_text:
+                self._reply_plain_text(message_id, fallback_text)
+
     def _reply_plain_text(self, message_id: str, text: str):
         """Fallback: reply as plain text when interactive card fails."""
-        request = ReplyMessageRequest.builder() \
-            .message_id(message_id) \
+        request = (
+            ReplyMessageRequest.builder()
+            .message_id(message_id)
             .request_body(
                 ReplyMessageRequestBody.builder()
                 .msg_type("text")
                 .content(json.dumps({"text": text}))
                 .build()
-            ).build()
+            )
+            .build()
+        )
         response = self.lark_client.im.v1.message.reply(request)
         if not response.success():
-            print(f"  [Feishu Bot] Plain text reply also failed: {response.code} - {response.msg}")
+            print(
+                f"  [Feishu Bot] Plain text reply also failed: {response.code} - {response.msg}"
+            )
 
     def _send_message(self, chat_id: str, text: str):
         """Send a new message to a chat with interactive card (Markdown rendered)."""
-        request = CreateMessageRequest.builder() \
-            .receive_id_type("chat_id") \
+        request = (
+            CreateMessageRequest.builder()
+            .receive_id_type("chat_id")
             .request_body(
                 CreateMessageRequestBody.builder()
                 .receive_id(chat_id)
                 .msg_type("interactive")
                 .content(self._build_interactive_card(text))
                 .build()
-            ).build()
+            )
+            .build()
+        )
 
         response = self.lark_client.im.v1.message.create(request)
         if not response.success():
@@ -1277,18 +1592,23 @@ class FeishuBotServer:
 
     def _send_plain_text(self, chat_id: str, text: str):
         """Fallback: send as plain text when interactive card fails."""
-        request = CreateMessageRequest.builder() \
-            .receive_id_type("chat_id") \
+        request = (
+            CreateMessageRequest.builder()
+            .receive_id_type("chat_id")
             .request_body(
                 CreateMessageRequestBody.builder()
                 .receive_id(chat_id)
                 .msg_type("text")
                 .content(json.dumps({"text": text}))
                 .build()
-            ).build()
+            )
+            .build()
+        )
         response = self.lark_client.im.v1.message.create(request)
         if not response.success():
-            print(f"  [Feishu Bot] Plain text send also failed: {response.code} - {response.msg}")
+            print(
+                f"  [Feishu Bot] Plain text send also failed: {response.code} - {response.msg}"
+            )
 
     # ── Mode detection ──────────────────────────────────────────────────
 
@@ -1297,12 +1617,38 @@ class FeishuBotServer:
         session = self._sessions.get(chat_id)
 
         if arg is None:
-            # Show current mode
-            if session:
-                mode_display = MODE_DISPLAY.get(session.permission_mode, session.permission_mode)
-                self._reply_text(message_id, f"Current mode: {mode_display} ({session.permission_mode})")
-            else:
-                self._reply_text(message_id, "No active session. Start a conversation first.")
+            # Send a dropdown card listing the four modes.  Without an
+            # active session, switching is impossible — show a hint
+            # instead of a card the user can't act on.
+            if not session:
+                self._reply_text(
+                    message_id, "No active session. Start a conversation first."
+                )
+                return
+
+            current_display = MODE_DISPLAY.get(
+                session.permission_mode, session.permission_mode
+            )
+            options = []
+            for display_name, sdk_mode in MODE_ALIASES.items():
+                marker = "  ← current" if sdk_mode == session.permission_mode else ""
+                options.append(
+                    {"text": f"{display_name}{marker}", "value": display_name}
+                )
+
+            intro = (
+                f"**Current mode:** `{current_display}` ({session.permission_mode})\n\n"
+                f"Pick a permission mode:"
+            )
+            card_json = build_select_card(
+                intro_markdown=intro,
+                placeholder="Select mode…",
+                options=options,
+                action_name=ACTION_MODE,
+                initial_value=current_display,
+            )
+            fallback = f"Current mode: {current_display} ({session.permission_mode})"
+            self._reply_card_json(message_id, card_json, fallback_text=fallback)
             return
 
         arg = arg.lower().strip()
@@ -1317,7 +1663,10 @@ class FeishuBotServer:
         sdk_mode = MODE_ALIASES[arg]
 
         if not session or not session.connected:
-            self._reply_text(message_id, "No active session. Start a conversation first, then switch mode.")
+            self._reply_text(
+                message_id,
+                "No active session. Start a conversation first, then switch mode.",
+            )
             return
 
         # Switch mode asynchronously
@@ -1329,7 +1678,14 @@ class FeishuBotServer:
         else:
             self._reply_text(message_id, "Event loop not available.")
 
-    async def _switch_mode(self, session: ChatSession, sdk_mode: str, display_name: str, chat_id: str, message_id: str):
+    async def _switch_mode(
+        self,
+        session: ChatSession,
+        sdk_mode: str,
+        display_name: str,
+        chat_id: str,
+        message_id: str,
+    ):
         """Switch permission mode on an active session."""
         if not session.client.supports(Feature.PERMISSION_MODE):
             self._send_message(
@@ -1342,7 +1698,9 @@ class FeishuBotServer:
             await session.client.set_permission_mode(sdk_mode)
             session.permission_mode = sdk_mode
             self._chat_modes[chat_id] = sdk_mode
-            self._send_message(chat_id, f"Mode switched to: {display_name} ({sdk_mode})")
+            self._send_message(
+                chat_id, f"Mode switched to: {display_name} ({sdk_mode})"
+            )
         except Exception as e:
             self._send_message(chat_id, f"Failed to switch mode: {e}")
 
@@ -1357,22 +1715,35 @@ class FeishuBotServer:
             if session and session.custom_title:
                 self._reply_text(message_id, f'Current title: "{session.custom_title}"')
             elif session and session.first_message:
-                self._reply_text(message_id, f'No custom title. Auto-summary: "{session.first_message[:30]}"\n\nUsage: /rename <new title>')
+                self._reply_text(
+                    message_id,
+                    f'No custom title. Auto-summary: "{session.first_message[:30]}"\n\nUsage: /rename <new title>',
+                )
             else:
-                self._reply_text(message_id, "No active session.\nUsage: /rename <new title>")
+                self._reply_text(
+                    message_id, "No active session.\nUsage: /rename <new title>"
+                )
             return
 
         if not session or not session.connected:
-            self._reply_text(message_id, "No active session. Start a conversation first, then rename.")
+            self._reply_text(
+                message_id,
+                "No active session. Start a conversation first, then rename.",
+            )
             return
 
         if not session.session_id:
-            self._reply_text(message_id, "Session not yet initialized. Send a message first, then rename.")
+            self._reply_text(
+                message_id,
+                "Session not yet initialized. Send a message first, then rename.",
+            )
             return
 
         title = title.strip()
         if not title:
-            self._reply_text(message_id, "Title cannot be empty.\nUsage: /rename <new title>")
+            self._reply_text(
+                message_id, "Title cannot be empty.\nUsage: /rename <new title>"
+            )
             return
 
         # Rename asynchronously
@@ -1384,7 +1755,9 @@ class FeishuBotServer:
         else:
             self._reply_text(message_id, "Event loop not available.")
 
-    async def _rename_session(self, session: ChatSession, title: str, chat_id: str, message_id: str):
+    async def _rename_session(
+        self, session: ChatSession, title: str, chat_id: str, message_id: str
+    ):
         """Rename session: update in-memory, write to .jsonl, update history."""
         try:
             old_title = session.custom_title or session.first_message or "(untitled)"
@@ -1394,7 +1767,9 @@ class FeishuBotServer:
 
             # 2. Write custom-title record to .jsonl session file
             encoded_dir = str(session.project_dir.resolve()).replace("/", "-")
-            jsonl_path = CLAUDE_SESSIONS_DIR / encoded_dir / f"{session.session_id}.jsonl"
+            jsonl_path = (
+                CLAUDE_SESSIONS_DIR / encoded_dir / f"{session.session_id}.jsonl"
+            )
             if jsonl_path.exists():
                 record = json.dumps({"type": "custom-title", "customTitle": title})
                 with open(jsonl_path, "a") as f:
@@ -1417,13 +1792,32 @@ class FeishuBotServer:
         session = self._sessions.get(chat_id)
 
         if arg is None:
-            # Show current backend
+            # Send a dropdown card listing the two backends.
             if session:
-                model_display = (CODEX_MODEL_DISPLAY if session.backend == "codex" else MODEL_DISPLAY).get(session.model, session.model)
-                self._reply_text(message_id, f"Current backend: {session.backend} (model: {model_display})")
+                current = session.backend
+                model_display = (
+                    CODEX_MODEL_DISPLAY if session.backend == "codex" else MODEL_DISPLAY
+                ).get(session.model, session.model)
+                intro = f"**Current backend:** `{current}` _(model: {model_display})_\n\nPick a backend:"
             else:
                 current = self._chat_backends.get(chat_id, self.default_backend)
-                self._reply_text(message_id, f"Current backend: {current} (no active session)")
+                intro = f"**Current backend:** `{current}` _(no active session)_\n\nPick a backend:"
+
+            options = []
+            for name in sorted(BACKEND_ALIASES):
+                marker = "  ← current" if name == current else ""
+                options.append({"text": f"{name}{marker}", "value": name})
+
+            card_json = build_select_card(
+                intro_markdown=intro,
+                placeholder="Select backend…",
+                options=options,
+                action_name=ACTION_BACKEND,
+                initial_value=current,
+            )
+            self._reply_card_json(
+                message_id, card_json, fallback_text=f"Current backend: {current}"
+            )
             return
 
         arg = arg.lower().strip()
@@ -1440,7 +1834,9 @@ class FeishuBotServer:
 
         # Reset model to the new backend's default (unless user explicitly set one)
         default_model = BACKEND_DEFAULT_MODELS.get(arg, "")
-        model_display = (CODEX_MODEL_DISPLAY if arg == "codex" else MODEL_DISPLAY).get(default_model, default_model)
+        model_display = (CODEX_MODEL_DISPLAY if arg == "codex" else MODEL_DISPLAY).get(
+            default_model, default_model
+        )
 
         # Backend requires new session — close current one
         if session and session.connected:
@@ -1479,14 +1875,38 @@ class FeishuBotServer:
         display_map = CODEX_MODEL_DISPLAY if backend == "codex" else MODEL_DISPLAY
 
         if arg is None:
-            # Show current model
+            # Send a dropdown card with the models for the current backend.
+            # The dropdown values are the user-friendly aliases (opus/sonnet/
+            # gpt-5.5 etc.); the existing _handle_model already accepts those.
             if session:
-                display = display_map.get(session.model, session.model)
-                self._reply_text(message_id, f"Current model: {display} ({session.model}) [{backend}]")
+                current_id = session.model
             else:
-                current = self._chat_models.get(chat_id, BACKEND_DEFAULT_MODELS.get(backend, self.default_model))
-                display = display_map.get(current, current)
-                self._reply_text(message_id, f"Current model: {display} [{backend}] (no active session)")
+                current_id = self._chat_models.get(
+                    chat_id, BACKEND_DEFAULT_MODELS.get(backend, self.default_model)
+                )
+            current_display = display_map.get(current_id, current_id)
+
+            options = []
+            for display_name, model_id in aliases.items():
+                marker = "  ← current" if model_id == current_id else ""
+                options.append(
+                    {"text": f"{display_name}{marker}", "value": display_name}
+                )
+
+            session_tag = "" if session else " _(no active session)_"
+            intro = (
+                f"**Current model:** `{current_display}` _({backend})_{session_tag}\n\n"
+                f"Pick a model:"
+            )
+            card_json = build_select_card(
+                intro_markdown=intro,
+                placeholder="Select model…",
+                options=options,
+                action_name=ACTION_MODEL,
+                initial_value=current_display,
+            )
+            fallback = f"Current model: {current_display} [{backend}]"
+            self._reply_card_json(message_id, card_json, fallback_text=fallback)
             return
 
         arg = arg.lower().strip()
@@ -1538,10 +1958,27 @@ class FeishuBotServer:
         session = self._sessions.get(chat_id)
 
         if arg is None:
-            # Show current effort
+            # Send a dropdown card with the 5 effort levels in ascending
+            # intensity.  Pre-select the current one if set.
             current = self._chat_efforts.get(chat_id, self.default_effort)
-            display = current or "default (not set)"
-            self._reply_text(message_id, f"Current effort: {display}")
+            display_current = current or "default (not set)"
+            ordered = ["low", "medium", "high", "xhigh", "max"]
+
+            options = []
+            for level in ordered:
+                marker = "  ← current" if level == current else ""
+                options.append({"text": f"{level}{marker}", "value": level})
+
+            intro = f"**Current effort:** `{display_current}`\n\nPick an effort level:"
+            card_json = build_select_card(
+                intro_markdown=intro,
+                placeholder="Select effort…",
+                options=options,
+                action_name=ACTION_EFFORT,
+                initial_value=current if current in ordered else None,
+            )
+            fallback = f"Current effort: {display_current}"
+            self._reply_card_json(message_id, card_json, fallback_text=fallback)
             return
 
         arg = arg.lower().strip()
@@ -1616,9 +2053,12 @@ class FeishuBotServer:
         if entry is None:
             entry = {
                 "session_id": session.session_id,
-                "summary": session.custom_title or (session.first_message or "")[:30] or "(no message)",
+                "summary": session.custom_title
+                or (session.first_message or "")[:30]
+                or "(no message)",
                 "permission_mode": session.permission_mode,
-                "project_alias": session.project_alias or self._get_project_alias(session.project_dir),
+                "project_alias": session.project_alias
+                or self._get_project_alias(session.project_dir),
                 "project_dir": str(session.project_dir),
                 "created_at": session.created_at.isoformat(),
                 "last_active": session.last_active.isoformat(),
@@ -1648,7 +2088,9 @@ class FeishuBotServer:
         history = self._load_session_history()
         return history.get(chat_id, [])
 
-    def _scan_cli_sessions(self, project_dir: Path, exclude_ids: set | None = None) -> list:
+    def _scan_cli_sessions(
+        self, project_dir: Path, exclude_ids: set | None = None
+    ) -> list:
         """
         Scan Claude Code CLI session files for a given project.
 
@@ -1671,7 +2113,11 @@ class FeishuBotServer:
             try:
                 with open(index_file) as f:
                     index_data = json.load(f)
-                entries = index_data.get("entries", []) if isinstance(index_data, dict) else index_data
+                entries = (
+                    index_data.get("entries", [])
+                    if isinstance(index_data, dict)
+                    else index_data
+                )
                 for entry in entries:
                     sid = entry.get("sessionId", "")
                     if sid:
@@ -1724,7 +2170,10 @@ class FeishuBotServer:
                             if has_tool_result:
                                 continue
                             for block in content:
-                                if isinstance(block, dict) and block.get("type") == "text":
+                                if (
+                                    isinstance(block, dict)
+                                    and block.get("type") == "text"
+                                ):
                                     text = block["text"].strip()
                                     if not text.startswith("<"):
                                         first_prompt = text[:30]
@@ -1735,24 +2184,30 @@ class FeishuBotServer:
             # Summary priority: customTitle > index summary > first_prompt > fallback
             summary = custom_title
             if not summary and index_entry:
-                summary = index_entry.get("summary") or index_entry.get("firstPrompt", "")[:30] or ""
+                summary = (
+                    index_entry.get("summary")
+                    or index_entry.get("firstPrompt", "")[:30]
+                    or ""
+                )
             if not summary:
                 summary = first_prompt
             if not summary:
                 continue
 
-            results.append({
-                "session_id": session_id,
-                "summary": summary[:50],
-                "custom_title": custom_title or None,
-                "permission_mode": permission_mode or "acceptEdits",
-                "project_alias": project_alias,
-                "project_dir": str(project_dir),
-                "created_at": created,
-                "last_active": last_active,
-                "backend": "claude",
-                "source": "cli",
-            })
+            results.append(
+                {
+                    "session_id": session_id,
+                    "summary": summary[:50],
+                    "custom_title": custom_title or None,
+                    "permission_mode": permission_mode or "acceptEdits",
+                    "project_alias": project_alias,
+                    "project_dir": str(project_dir),
+                    "created_at": created,
+                    "last_active": last_active,
+                    "backend": "claude",
+                    "source": "cli",
+                }
+            )
 
         results.sort(key=lambda x: x["last_active"], reverse=True)
         return results
@@ -1797,7 +2252,9 @@ class FeishuBotServer:
         if session:
             backend = session.backend
 
-        current_project_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
+        current_project_dir = self._chat_project_dirs.get(
+            chat_id, self.default_project_dir
+        )
 
         if backend == "codex":
             return self._scan_codex_threads_sync(current_project_dir)[:10]
@@ -1812,7 +2269,7 @@ class FeishuBotServer:
         caller thread (the message handler thread) until it returns.
         """
         try:
-            from codex_agent import list_codex_threads, codex_available
+            from codex_agent import codex_available, list_codex_threads
         except ImportError:
             return []
 
@@ -1838,7 +2295,13 @@ class FeishuBotServer:
             return []
 
     def _handle_resume(self, arg: str | None, chat_id: str, message_id: str):
-        """Handle /resume command: list history or resume a session."""
+        """Handle /resume command: list history or resume a session.
+
+        ``arg`` accepts:
+        - ``None``  → send a dropdown card listing recent sessions (UI mode)
+        - ``"3"``   → numeric index from the (legacy) text listing
+        - session_id (UUID-ish) → resume by id (used by the dropdown callback)
+        """
         merged = self._get_merged_sessions(chat_id)
 
         if not merged:
@@ -1848,38 +2311,85 @@ class FeishuBotServer:
             return
 
         if arg is None:
-            # List recent sessions for current project
+            # Send a dropdown card.  Each option's label shows the title
+            # (custom_title preferred, summary as fallback) plus the time;
+            # the option's value is the session_id so the callback can
+            # resume it directly without index arithmetic.
             project_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
             alias = self._get_project_alias(project_dir) or str(project_dir)
             session = self._sessions.get(chat_id)
-            backend = session.backend if session else self._chat_backends.get(chat_id, self.default_backend)
-            lines = [f"Sessions for {alias} [backend: {backend}]:\n"]
-            for i, entry in enumerate(merged, 1):
+            backend = (
+                session.backend
+                if session
+                else self._chat_backends.get(chat_id, self.default_backend)
+            )
+
+            options = []
+            seen_values: set[str] = set()
+            for entry in merged:
+                session_id = entry.get("session_id")
+                if not session_id or session_id in seen_values:
+                    continue
+                seen_values.add(session_id)
+
                 last_active = entry.get("last_active", "")
                 try:
                     dt = datetime.fromisoformat(last_active)
                     time_str = dt.strftime("%-m/%-d %H:%M")
                 except (ValueError, TypeError):
                     time_str = "?"
-                summary = entry.get("summary", "?")
-                lines.append(f'{i}. [{time_str}] "{summary}"')
-            lines.append("\nUsage: /resume <number>")
-            lines.append(f"(Switch backend with /backend to see the other backend's sessions.)")
-            self._reply_text(message_id, "\n".join(lines))
+
+                title = (
+                    entry.get("custom_title") or entry.get("summary") or "(no title)"
+                )
+                label = f"[{time_str}] {truncate(title, 40)}"
+                options.append({"text": label, "value": session_id})
+
+            if not options:
+                self._reply_text(
+                    message_id, f"No resumable sessions for project: {alias}"
+                )
+                return
+
+            intro = (
+                f"**Sessions for `{alias}`** _(backend: {backend})_\n\n"
+                f"Pick a session to resume:"
+            )
+            card_json = build_select_card(
+                intro_markdown=intro,
+                placeholder="Select a session…",
+                options=options,
+                action_name=ACTION_RESUME,
+            )
+            fallback = f"Sessions for {alias} [backend: {backend}]: " + str(
+                len(options)
+            )
+            self._reply_card_json(message_id, card_json, fallback_text=fallback)
             return
 
-        # Resume specific session by number
-        try:
-            idx = int(arg.strip()) - 1
-        except ValueError:
-            self._reply_text(message_id, "Usage: /resume <number>\nExample: /resume 1")
-            return
-
-        if idx < 0 or idx >= len(merged):
-            self._reply_text(message_id, f"Invalid number. Choose between 1 and {len(merged)}.")
-            return
-
-        entry = merged[idx]
+        # Resume by session_id (from card click) OR by 1-based index (legacy CLI).
+        arg_clean = arg.strip()
+        entry = None
+        if arg_clean.isdigit():
+            idx = int(arg_clean) - 1
+            if idx < 0 or idx >= len(merged):
+                self._reply_text(
+                    message_id, f"Invalid number. Choose between 1 and {len(merged)}."
+                )
+                return
+            entry = merged[idx]
+        else:
+            for e in merged:
+                if e.get("session_id") == arg_clean:
+                    entry = e
+                    break
+            if entry is None:
+                self._reply_text(
+                    message_id,
+                    f"Session not found: {arg_clean[:8]}…\n"
+                    "It may have been removed since the card was sent.",
+                )
+                return
         session_id = entry.get("session_id")
         project_dir_str = entry.get("project_dir")
         project_alias = entry.get("project_alias")
@@ -1897,21 +2407,34 @@ class FeishuBotServer:
 
         # Auto-switch project, backend, and model based on the entry
         self._chat_project_dirs[chat_id] = project_dir
-        entry_backend = entry.get("backend") or self._chat_backends.get(chat_id, self.default_backend)
+        entry_backend = entry.get("backend") or self._chat_backends.get(
+            chat_id, self.default_backend
+        )
         self._chat_backends[chat_id] = entry_backend
         # Use entry's model if present and looks valid for the backend; else
         # fall back to the backend's default
-        model = entry.get("model") or BACKEND_DEFAULT_MODELS.get(entry_backend, self.default_model)
+        model = entry.get("model") or BACKEND_DEFAULT_MODELS.get(
+            entry_backend, self.default_model
+        )
         self._chat_models[chat_id] = model
 
         # Resume asynchronously
         if self._loop and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(
-                self._resume_session(chat_id, session_id, project_dir, project_alias, entry),
+                self._resume_session(
+                    chat_id, session_id, project_dir, project_alias, entry
+                ),
                 self._loop,
             )
 
-    async def _resume_session(self, chat_id: str, session_id: str, project_dir: Path, project_alias: str | None, entry: dict):
+    async def _resume_session(
+        self,
+        chat_id: str,
+        session_id: str,
+        project_dir: Path,
+        project_alias: str | None,
+        entry: dict,
+    ):
         """Resume a previous session by session_id."""
         try:
             # Close current session if any
@@ -1919,12 +2442,18 @@ class FeishuBotServer:
 
             # The entry's backend is authoritative — a Claude session_id can't
             # be resumed by Codex and vice versa.  Auto-switch if needed.
-            backend = entry.get("backend") or self._chat_backends.get(chat_id, self.default_backend)
+            backend = entry.get("backend") or self._chat_backends.get(
+                chat_id, self.default_backend
+            )
             self._chat_backends[chat_id] = backend
 
-            model = entry.get("model") or BACKEND_DEFAULT_MODELS.get(backend, self.default_model)
+            model = entry.get("model") or BACKEND_DEFAULT_MODELS.get(
+                backend, self.default_model
+            )
             mode = entry.get("permission_mode", "acceptEdits")
-            print(f"  [Session] Resuming session {session_id[:8]}... for chat {chat_id[:8]}... (backend: {backend}, project: {project_dir}, model: {model}, mode: {mode})")
+            print(
+                f"  [Session] Resuming session {session_id[:8]}... for chat {chat_id[:8]}... (backend: {backend}, project: {project_dir}, model: {model}, mode: {mode})"
+            )
             client = create_agent_client(
                 backend=backend,
                 project_dir=str(project_dir),
@@ -1933,7 +2462,9 @@ class FeishuBotServer:
                 resume=session_id,
             )
 
-            session = ChatSession(chat_id=chat_id, client=client, project_dir=project_dir)
+            session = ChatSession(
+                chat_id=chat_id, client=client, project_dir=project_dir
+            )
             session.session_id = session_id
             session.model = model
             session.backend = backend
@@ -1945,7 +2476,9 @@ class FeishuBotServer:
             await session.connect()
             self._sessions[chat_id] = session
 
-            mode_display = MODE_DISPLAY.get(session.permission_mode, session.permission_mode)
+            mode_display = MODE_DISPLAY.get(
+                session.permission_mode, session.permission_mode
+            )
             summary = entry.get("summary", "?")
 
             # Read last assistant response from .jsonl

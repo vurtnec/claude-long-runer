@@ -12,7 +12,7 @@ trigger:
   operator: and
   triggers:
     - type: cron
-      cron: "*/30 9-18 * * 1-5"  # Weekdays 9:00-18:00, every 30 minutes
+      cron: "*/30 9-18 * * 1-5" # Weekdays 9:00-18:00, every 30 minutes
     - type: http_condition
       url: "https://api.github.com/repos/OWNER/REPO/pulls?state=open"
       headers:
@@ -25,7 +25,7 @@ task:
   params:
     pr_number: "{{trigger.http_response[0].number}}"
   project_dir: "/path/to/repo"
-  model: "claude-sonnet-4-5-20250929"
+  model: "claude-opus-4-7"
   max_iterations: 5
 
 notifications:

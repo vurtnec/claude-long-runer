@@ -23,7 +23,7 @@ from client import create_client
 async def run_inline_task(
     prompt: str,
     project_dir: Path,
-    model: str = "claude-sonnet-4-5-20250929",
+    model: str = "claude-opus-4-7",
     max_turns: int = 3,
     effort: str | None = None,
 ) -> Dict[str, Any]:

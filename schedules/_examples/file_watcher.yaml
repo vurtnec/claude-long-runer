@@ -12,14 +12,14 @@ trigger:
   paths:
     - "/data/exports/daily_export.csv"
     - "/data/exports/weekly_export.csv"
-  debounce_seconds: 60            # Wait 60 seconds after file change before triggering (to avoid rapid re-triggers)
+  debounce_seconds: 60 # Wait 60 seconds after file change before triggering (to avoid rapid re-triggers)
 
 task:
   name: data_analysis
   params:
     source_file: "{{trigger.changed_file}}"
   project_dir: "/path/to/project"
-  model: "claude-sonnet-4-5-20250929"
+  model: "claude-opus-4-7"
   max_iterations: 5
 
 notifications:

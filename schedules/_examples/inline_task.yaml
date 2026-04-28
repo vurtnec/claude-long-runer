@@ -9,7 +9,7 @@ enabled: true
 
 trigger:
   type: cron
-  cron: "30 7 * * 1-5"           # Weekdays at 7:30 AM
+  cron: "30 7 * * 1-5" # Weekdays at 7:30 AM
   timezone: "Asia/Shanghai"
 
 task:
@@ -20,7 +20,7 @@ task:
     2. Analyze key market outlook highlights for today
     3. Summarize recent tech news highlights
     Please keep it concise.
-  model: "claude-sonnet-4-5-20250929"
+  model: "claude-opus-4-7"
   max_turns: 3
   project_dir: "."
 

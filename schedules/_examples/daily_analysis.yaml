@@ -9,16 +9,16 @@ enabled: true
 
 trigger:
   type: cron
-  cron: "0 8 * * *"              # Every day at 8:00 AM
+  cron: "0 8 * * *" # Every day at 8:00 AM
   timezone: "Asia/Shanghai"
 
 task:
-  name: data_analysis             # Corresponds to the tasks/data_analysis/ directory
+  name: data_analysis # Corresponds to the tasks/data_analysis/ directory
   params:
     report_type: "daily"
     date: "{{today}}"
   project_dir: "/path/to/your/project"
-  model: "claude-sonnet-4-5-20250929"
+  model: "claude-opus-4-7"
   max_iterations: 10
 
 timeout_minutes: 90

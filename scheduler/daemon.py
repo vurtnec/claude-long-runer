@@ -189,6 +189,7 @@ class SchedulerDaemon:
         # its 30s socket timeout fires.
         try:
             from .triggers.teams_trigger import _FETCH_POOL
+
             _FETCH_POOL.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
@@ -271,10 +272,7 @@ class SchedulerDaemon:
             resolved_params[key] = value
 
         # Determine model and max_iterations (schedule > defaults > hardcoded)
-        model = (
-            schedule.task.model
-            or self.defaults.get("model", "claude-sonnet-4-5-20250929")
-        )
+        model = schedule.task.model or self.defaults.get("model", "claude-opus-4-7")
         effort = schedule.task.effort or self.defaults.get("effort")
 
         success = False
@@ -283,7 +281,9 @@ class SchedulerDaemon:
         last_response = ""
         retries = 0
 
-        timeout_minutes = schedule.timeout_minutes or self.defaults.get("timeout_minutes", 60)
+        timeout_minutes = schedule.timeout_minutes or self.defaults.get(
+            "timeout_minutes", 60
+        )
         print(f"  Timeout: {timeout_minutes} minutes")
 
         while retries <= schedule.retry.max_retries:
@@ -291,7 +291,9 @@ class SchedulerDaemon:
                 if schedule.task.task_type == "inline":
                     # Inline task: direct prompt execution
                     result = await asyncio.wait_for(
-                        self._execute_inline(schedule, model, template_vars, effort=effort),
+                        self._execute_inline(
+                            schedule, model, template_vars, effort=effort
+                        ),
                         timeout=timeout_minutes * 60,
                     )
                     success = result["success"]
@@ -302,7 +304,9 @@ class SchedulerDaemon:
                 else:
                     # Standard task: use existing run_long_task()
                     result = await asyncio.wait_for(
-                        self._execute_standard(schedule, model, resolved_params, effort=effort),
+                        self._execute_standard(
+                            schedule, model, resolved_params, effort=effort
+                        ),
                         timeout=timeout_minutes * 60,
                     )
                     success = result["success"]
@@ -392,7 +396,9 @@ class SchedulerDaemon:
 
         print(f"  Executing standard task: {schedule.task.name}")
         print(f"  Project dir: {project_dir}")
-        print(f"  Model: {model}, Max iterations: {max_iters}, Effort: {effort or 'default'}")
+        print(
+            f"  Model: {model}, Max iterations: {max_iters}, Effort: {effort or 'default'}"
+        )
 
         success = await run_long_task(
             task_name=schedule.task.name,
@@ -450,9 +456,7 @@ class SchedulerDaemon:
             effort=effort,
         )
 
-    async def _send_notifications(
-        self, notifications, context: Dict[str, Any]
-    ):
+    async def _send_notifications(self, notifications, context: Dict[str, Any]):
         """Send all configured notifications."""
         for notif in notifications:
             notifier = self._notifiers.get(notif.type)
@@ -469,6 +473,7 @@ class SchedulerDaemon:
         if not self._running:
             print("\nForce shutdown...")
             import os
+
             os._exit(1)
         print("\nShutdown signal received...")
         self._running = False

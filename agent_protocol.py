@@ -25,18 +25,18 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
-
 # ── Unified Event Types ──────────────────────────────────────────────────────
+
 
 class EventType(str, Enum):
     """All event types that callers may receive during a response stream."""
 
-    TEXT = "text"                    # Assistant text content (delta or full)
-    TOOL_USE = "tool_use"           # Agent is invoking a tool
-    TOOL_RESULT = "tool_result"     # Tool execution finished
-    SYSTEM = "system"               # Session metadata (session_id, mode, …)
-    RESULT = "result"               # End-of-response signal
-    ERROR = "error"                 # Non-fatal error or warning
+    TEXT = "text"  # Assistant text content (delta or full)
+    TOOL_USE = "tool_use"  # Agent is invoking a tool
+    TOOL_RESULT = "tool_result"  # Tool execution finished
+    SYSTEM = "system"  # Session metadata (session_id, mode, …)
+    RESULT = "result"  # End-of-response signal
+    ERROR = "error"  # Non-fatal error or warning
 
 
 @dataclass(slots=True)
@@ -68,6 +68,7 @@ class AgentEvent:
 
 # ── Capability Feature Keys ──────────────────────────────────────────��───────
 
+
 class Feature(str, Enum):
     """
     Feature flags exposed via `AgentClient.supports()`.
@@ -76,15 +77,16 @@ class Feature(str, Enum):
     user-friendly "not supported" message instead of crashing.
     """
 
-    PERMISSION_MODE = "permission_mode"         # dynamic mode switch
-    SESSION_RESUME = "session_resume"           # resume by session/thread id
-    STREAMING = "streaming"                     # event-by-event streaming
-    INTERRUPT = "interrupt"                     # cancel in-flight request
-    MCP_SERVERS = "mcp_servers"                 # SDK-managed MCP servers
-    SECURITY_HOOKS = "security_hooks"           # pre-tool-use hooks
+    PERMISSION_MODE = "permission_mode"  # dynamic mode switch
+    SESSION_RESUME = "session_resume"  # resume by session/thread id
+    STREAMING = "streaming"  # event-by-event streaming
+    INTERRUPT = "interrupt"  # cancel in-flight request
+    MCP_SERVERS = "mcp_servers"  # SDK-managed MCP servers
+    SECURITY_HOOKS = "security_hooks"  # pre-tool-use hooks
 
 
 # ── Agent Client Protocol ────────────────────────────────────────────────────
+
 
 @runtime_checkable
 class AgentClient(Protocol):
@@ -173,6 +175,7 @@ class AgentClient(Protocol):
 
 # ── Factory ──────────────────────────────────────────────────────────────────
 
+
 def create_agent_client(
     backend: str,
     *,
@@ -202,9 +205,10 @@ def create_agent_client(
 
     if backend == "claude":
         from claude_agent import ClaudeAgentClient
+
         return ClaudeAgentClient(
             project_dir=project_dir,
-            model=model or "claude-sonnet-4-5-20250929",
+            model=model or "claude-opus-4-7",
             permission_mode=permission_mode,
             resume=resume,
             restricted=restricted,
@@ -216,6 +220,7 @@ def create_agent_client(
 
     elif backend == "codex":
         from codex_agent import CodexAgentClient
+
         return CodexAgentClient(
             project_dir=project_dir,
             model=model or "o3",
@@ -227,7 +232,4 @@ def create_agent_client(
         )
 
     else:
-        raise ValueError(
-            f"Unknown backend: {backend!r}.  "
-            f"Supported: 'claude', 'codex'"
-        )
+        raise ValueError(f"Unknown backend: {backend!r}.  Supported: 'claude', 'codex'")
