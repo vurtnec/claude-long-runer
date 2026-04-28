@@ -40,7 +40,16 @@ import requests
 # basic delegated Graph access.
 DEFAULT_CLIENT_ID = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
 DEFAULT_AUTHORITY = "https://login.microsoftonline.com/common"
-DEFAULT_SCOPES = ["Chat.Read", "User.Read"]
+# Chat.Read         — list chats / read messages (trigger side)
+# ChatMessage.Send  — post a new top-level message into a chat (reply side)
+# User.Read         — resolve the signed-in user's id/displayName so
+#                     TeamsMessageTrigger can filter out self-sent messages.
+#
+# NOTE: Adding ChatMessage.Send to an existing install REQUIRES re-running
+# `python teams_probe.py` once. MSAL's silent-acquire keys cached tokens by
+# scope, so the previous Chat.Read-only token is unusable here and the user
+# must re-consent via device-code flow.
+DEFAULT_SCOPES = ["Chat.Read", "ChatMessage.Send", "User.Read"]
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
@@ -227,6 +236,55 @@ class TeamsClient:
                 f"Graph GET {path} failed: {r.status_code} {r.text[:300]}"
             )
         return r.json()
+
+    def _post(self, path: str, json_body: Dict[str, Any]) -> Dict[str, Any]:
+        token = self.get_access_token(interactive=False)
+        url = path if path.startswith("http") else f"{GRAPH_BASE}{path}"
+        r = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json=json_body,
+            timeout=30,
+        )
+        if not r.ok:
+            raise RuntimeError(
+                f"Graph POST {path} failed: {r.status_code} {r.text[:300]}"
+            )
+        # Graph returns 201 + the created resource for chat-message sends; for
+        # other endpoints a successful write may return 204 with no body.
+        return r.json() if r.text else {}
+
+    def send_chat_message(
+        self,
+        chat_id: str,
+        text: str,
+        content_type: str = "text",
+    ) -> Dict[str, Any]:
+        """
+        Post a new top-level message into an existing chat.
+
+        Teams 1:1 and group chats have no thread/reply hierarchy — every
+        send is a standalone message in the chat, attributed to the
+        signed-in user. So "reply to the person who sent us a message" is
+        modelled as "send a new message into the chat that contained their
+        message", which is what TeamsReplyNotifier does.
+
+        Requires the ``ChatMessage.Send`` scope (see ``DEFAULT_SCOPES``).
+        Re-run ``teams_probe.py`` once after upgrading if the cached token
+        only has the older ``Chat.Read``-only scope set.
+        """
+        if content_type not in ("text", "html"):
+            content_type = "text"
+        body = {
+            "body": {
+                "contentType": content_type,
+                "content": text,
+            }
+        }
+        return self._post(f"/me/chats/{chat_id}/messages", body)
 
     def get_my_identity(self) -> Tuple[Optional[str], Optional[str]]:
         """Return (user_id, displayName) of the signed-in user, cached."""

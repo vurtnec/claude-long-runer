@@ -35,6 +35,7 @@ from .notifiers.base import BaseNotifier
 from .notifiers.dingtalk_notifier import DingTalkNotifier
 from .notifiers.email_notifier import EmailNotifier
 from .notifiers.feishu_notifier import FeishuNotifier
+from .notifiers.teams_reply_notifier import TeamsReplyNotifier
 from .notifiers.webhook_notifier import WebhookNotifier
 from .notifiers.wechat_notifier import WeChatNotifier
 from .schedule_loader import load_all_schedules, resolve_env_vars
@@ -83,6 +84,9 @@ class SchedulerDaemon:
             "dingtalk": DingTalkNotifier(notif_config),
             "webhook": WebhookNotifier(notif_config),
             "email": EmailNotifier(notif_config),
+            # Replies into the originating Teams chat for whitelisted
+            # senders only; designed to pair with a teams_message trigger.
+            "teams_reply": TeamsReplyNotifier(notif_config),
         }
 
         # Defaults

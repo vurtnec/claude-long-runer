@@ -75,6 +75,7 @@ def parse_trigger_config(data: dict) -> TriggerConfig:
         content_pattern=data.get("content_pattern"),
         match_html=data.get("match_html", True),
         exclude_self=data.get("exclude_self", True),
+        min_message_length=data.get("min_message_length", 0),
     )
 
 

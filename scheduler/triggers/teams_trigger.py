@@ -59,6 +59,10 @@ class TeamsMessageTrigger(BaseTrigger):
         # sending to yourself in any chat.
         self.exclude_self: bool = bool(config.get("exclude_self", True))
 
+        # Skip messages whose stripped plain-text body is shorter than this.
+        # Avoids spinning up Claude for "OK" / "收到" acknowledgements.
+        self.min_message_length: int = int(config.get("min_message_length", 0))
+
         self._client = client or get_teams_client()
         self._resolved_chat_id: Optional[str] = self.explicit_chat_id
         self._chat_resolution_attempted = False
@@ -131,6 +135,12 @@ class TeamsMessageTrigger(BaseTrigger):
                 return None
 
         if self.sender_displayname and msg.sender_name != self.sender_displayname:
+            return None
+
+        # Length filter on plain-text body — measured AFTER HTML strip so that
+        # `<at>...</at>` tags don't pad the count. A short ack like "OK" stays
+        # short whether the source body is HTML or plain text.
+        if self.min_message_length > 0 and len(msg.body_text) < self.min_message_length:
             return None
 
         if self.content_re:

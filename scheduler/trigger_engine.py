@@ -33,6 +33,7 @@ def create_trigger(config: TriggerConfig) -> BaseTrigger:
         "content_pattern": config.content_pattern,
         "match_html": config.match_html,
         "exclude_self": config.exclude_self,
+        "min_message_length": config.min_message_length,
     }
 
     if config.type == TriggerType.CRON:

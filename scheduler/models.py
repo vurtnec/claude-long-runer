@@ -51,6 +51,10 @@ class TriggerConfig:
     content_pattern: Optional[str] = None
     match_html: bool = True
     exclude_self: bool = True
+    # Minimum length of the plain-text (HTML-stripped) message body. 0 = no
+    # filter. Use this to skip "OK"/"收到"-style short acknowledgements that
+    # don't deserve an AI analysis.
+    min_message_length: int = 0
 
 
 @dataclass
