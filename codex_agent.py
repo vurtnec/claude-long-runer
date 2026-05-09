@@ -94,6 +94,59 @@ def _normalize_effort(value: str | None) -> str | None:
     return mapped
 
 
+# Approval policy mapping: Claude/bot permission_mode → Codex approval_policy.
+# Codex valid values: untrusted, on-failure, on-request, never
+# Claude/bot values:  plan, default, auto, acceptEdits, bypassPermissions
+_APPROVAL_POLICY_MAP = {
+    # Claude vocab → Codex equivalent
+    "plan":              "untrusted",     # plan-only ≈ most restrictive
+    "default":           "untrusted",     # ask-before-everything
+    "acceptedits":       "on-failure",    # auto-accept edits, ask on failure
+    "auto":              "on-request",    # auto-determine, ask when prompted
+    "bypasspermissions": "never",         # full auto
+    "bypass":            "never",
+    # Pass-through for native Codex values
+    "untrusted":   "untrusted",
+    "on-failure":  "on-failure",
+    "on-request":  "on-request",
+    "never":       "never",
+}
+
+
+def _normalize_approval_policy(value: str | None) -> str | None:
+    """Translate a Claude/bot permission_mode to a Codex approval_policy."""
+    if value is None:
+        return None
+    key = value.lower().strip().replace("_", "").replace("-", "")
+    # Try the unhyphenated key first, then fall back to the original (covers
+    # native Codex values which contain hyphens, e.g. "on-failure").
+    mapped = _APPROVAL_POLICY_MAP.get(key) or _APPROVAL_POLICY_MAP.get(
+        value.lower().strip()
+    )
+    if mapped is None:
+        logger.warning(
+            "Unknown approval_policy value %r, dropping (Codex will use default)",
+            value,
+        )
+    return mapped
+
+
+def _unwrap_thread_item(item: Any) -> Any:
+    """
+    ItemStarted/ItemCompleted notifications carry `item: ThreadItem`, which is
+    a Pydantic RootModel discriminated union.  Unwrap to the inner typed item
+    (AgentMessageThreadItem, CommandExecutionThreadItem, etc.) so attribute
+    lookups like `.type`, `.text`, `.command` work directly.
+
+    Falls back to the original object if it's already unwrapped — keeps the
+    callers defensive against minor SDK shape changes.
+    """
+    if item is None:
+        return None
+    inner = getattr(item, "root", None)
+    return inner if inner is not None else item
+
+
 async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
     """
     List Codex threads for a project directory.
@@ -246,7 +299,7 @@ class CodexAgentClient:
 
         self._project_dir = str(Path(project_dir).resolve()) if project_dir else None
         self._model = model
-        self._approval_policy = approval_policy
+        self._approval_policy = _normalize_approval_policy(approval_policy)
         self._resume_thread_id = resume_thread_id
         self._effort = _normalize_effort(effort)  # map Claude vocab → Codex
         self._max_turns = max_turns
@@ -420,6 +473,24 @@ class CodexAgentClient:
         method: str = getattr(notification, "method", "")
         payload: Any = getattr(notification, "payload", None)
 
+        # Diagnostic — every notification, with payload type + key fields, so we
+        # can see why a turn produced no TEXT events.  Set CODEX_DEBUG_NOTIFS=0
+        # to silence after debugging.
+        if os.environ.get("CODEX_DEBUG_NOTIFS", "1") != "0":
+            payload_type = type(payload).__name__
+            extra = ""
+            item = getattr(payload, "item", None)
+            if item is not None:
+                inner = getattr(item, "root", item)
+                extra = f" item.type={getattr(inner, 'type', '?')!r}"
+            elif hasattr(payload, "delta"):
+                d = getattr(payload, "delta", "")
+                if isinstance(d, str) and len(d) > 60:
+                    extra = f" delta={d[:60]!r}…"
+                else:
+                    extra = f" delta={d!r}"
+            logger.info("[codex notif] %s payload=%s%s", method, payload_type, extra)
+
         # Look up handler by exact method match first, then by prefix
         handler_name = _NOTIFICATION_HANDLERS.get(method)
         if handler_name is None:
@@ -456,11 +527,12 @@ class CodexAgentClient:
 
     def _on_item_started(self, method: str, payload: Any) -> AgentEvent | None:
         """Handle item/started — usually a tool invocation beginning."""
-        item = getattr(payload, "item", payload)
+        item = _unwrap_thread_item(getattr(payload, "item", payload))
         item_type = getattr(item, "type", "")
 
-        # Detect tool use from item type
-        if item_type in ("command_execution", "file_change", "mcp_tool_call"):
+        # Item types use camelCase in the SDK schema (agentMessage,
+        # commandExecution, fileChange, mcpToolCall, etc.).
+        if item_type in ("commandExecution", "fileChange", "mcpToolCall"):
             tool_name = (
                 getattr(item, "name", None)
                 or getattr(item, "command", None)
@@ -475,11 +547,11 @@ class CodexAgentClient:
         return None
 
     def _on_item_completed(self, method: str, payload: Any) -> AgentEvent | None:
-        """Handle item/completed — tool execution result."""
-        item = getattr(payload, "item", payload)
+        """Handle item/completed — final assistant message or tool result."""
+        item = _unwrap_thread_item(getattr(payload, "item", payload))
         item_type = getattr(item, "type", "")
 
-        if item_type in ("command_execution", "file_change", "mcp_tool_call"):
+        if item_type in ("commandExecution", "fileChange", "mcpToolCall"):
             status = getattr(item, "status", "completed")
             output = getattr(item, "output", None) or getattr(item, "result", None)
             return AgentEvent(
@@ -487,8 +559,9 @@ class CodexAgentClient:
                 result_content=str(output)[:500] if output else "",
                 is_error=(status == "failed"),
             )
-        elif item_type == "agent_message":
-            # Final message text
+        elif item_type == "agentMessage":
+            # Final assistant message — codex often emits only the completed
+            # item (no per-token deltas), so this is what users actually see.
             text = getattr(item, "text", None) or getattr(item, "content", None)
             if text:
                 return AgentEvent(type=EventType.TEXT, text=str(text))
@@ -513,9 +586,32 @@ class CodexAgentClient:
         )
 
     def _on_turn_completed(self, method: str, payload: Any) -> AgentEvent | None:
-        """Handle turn/completed — signals end of turn."""
-        # We emit RESULT in receive_events() after the stream ends,
-        # so this is just metadata.
+        """Handle turn/completed — signals end of turn.  Surfaces failure
+        info because codex sometimes ends a turn with status=failed and no
+        item notifications (e.g. expired auth token), which would otherwise
+        look like "silent nothing" to the bot user."""
+        turn = getattr(payload, "turn", None)
+        status = getattr(turn, "status", None)
+        error = getattr(turn, "error", None)
+
+        if status is not None and str(status) not in ("completed", "TurnStatus.completed"):
+            logger.warning("Codex turn ended status=%s error=%s", status, error)
+            error_msg = ""
+            if error is not None:
+                error_msg = (
+                    getattr(error, "message", None)
+                    or getattr(error, "detail", None)
+                    or str(error)
+                )
+            return AgentEvent(
+                type=EventType.ERROR,
+                metadata={
+                    "error": f"Codex turn {status}: {error_msg}" if error_msg else f"Codex turn {status}",
+                    "turn_completed": True,
+                    "session_id": self._session_id,
+                },
+            )
+
         return AgentEvent(
             type=EventType.SYSTEM,
             metadata={
