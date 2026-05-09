@@ -174,18 +174,27 @@ class TeamsClient:
     # Auth
     # ------------------------------------------------------------------
 
-    def get_access_token(self, interactive: bool = True) -> str:
+    def get_access_token(
+        self, interactive: bool = True, force_refresh: bool = False
+    ) -> str:
         """
         Return a valid access token. Tries silent acquisition first; falls back
         to device code flow only if ``interactive=True`` (set False inside the
         scheduler daemon to avoid blocking on user input — pre-login via
         ``teams_probe.py`` instead).
+
+        ``force_refresh=True`` skips the cached access token and forces MSAL to
+        use the refresh token, used by ``_request_with_retry`` after a 401 so
+        we recover from the case where Graph rejects a token that MSAL still
+        considers cache-valid (token-expiry boundary races).
         """
         with self._lock:
             accounts = self._app.get_accounts()
             if accounts:
                 result = self._app.acquire_token_silent(
-                    self.scopes, account=accounts[0]
+                    self.scopes,
+                    account=accounts[0],
+                    force_refresh=force_refresh,
                 )
                 if result and "access_token" in result:
                     self._save_cache()
@@ -222,15 +231,43 @@ class TeamsClient:
     # Graph calls
     # ------------------------------------------------------------------
 
-    def _get(self, path: str, params: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-        token = self.get_access_token(interactive=False)
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, str]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+    ) -> requests.Response:
+        """
+        Issue a Graph request, transparently force-refreshing the access token
+        and retrying once on 401. Handles the case where MSAL hands out a
+        cached access token that Graph has already deemed expired (a few-minute
+        boundary race we observed in the scheduler daemon).
+        """
         url = path if path.startswith("http") else f"{GRAPH_BASE}{path}"
-        r = requests.get(
-            url,
-            headers={"Authorization": f"Bearer {token}"},
-            params=params,
-            timeout=30,
-        )
+        for attempt in (0, 1):
+            token = self.get_access_token(
+                interactive=False, force_refresh=bool(attempt)
+            )
+            headers = {"Authorization": f"Bearer {token}"}
+            if json_body is not None:
+                headers["Content-Type"] = "application/json"
+            r = requests.request(
+                method,
+                url,
+                headers=headers,
+                params=params,
+                json=json_body,
+                timeout=30,
+            )
+            if r.status_code != 401 or attempt == 1:
+                return r
+            # 401 on first attempt → loop once with force_refresh=True
+        return r  # unreachable, satisfies type checker
+
+    def _get(self, path: str, params: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        r = self._request("GET", path, params=params)
         if not r.ok:
             raise RuntimeError(
                 f"Graph GET {path} failed: {r.status_code} {r.text[:300]}"
@@ -238,17 +275,7 @@ class TeamsClient:
         return r.json()
 
     def _post(self, path: str, json_body: Dict[str, Any]) -> Dict[str, Any]:
-        token = self.get_access_token(interactive=False)
-        url = path if path.startswith("http") else f"{GRAPH_BASE}{path}"
-        r = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            json=json_body,
-            timeout=30,
-        )
+        r = self._request("POST", path, json_body=json_body)
         if not r.ok:
             raise RuntimeError(
                 f"Graph POST {path} failed: {r.status_code} {r.text[:300]}"
