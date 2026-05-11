@@ -54,12 +54,16 @@ defaults:
 # Feishu bot settings (for receiving messages and triggering tasks)
 feishu_bot:
   enabled: true # Start bot alongside daemon
+  # Default backend for new sessions: claude or codex.
+  # Users can override per-chat with /backend, or per-project below.
+  default_backend: "claude"
   model: "claude-opus-4-7"
   effort: "xhigh" # Default effort for bot sessions (omit to use CLI default)
   # Default permission mode for new bot sessions when /mode is not used.
-  # Friendly aliases: plan | ask | auto | edits
+  # Friendly aliases: plan | ask | auto | edits | bypass
   # Or raw SDK values: default | acceptEdits | plan | auto | bypassPermissions | dontAsk
   # `auto` lets the SDK decide which actions need confirmation (recommended).
+  # `bypass` = full auto: Claude never prompts; Codex approval_policy=never.
   mode: "auto"
   max_turns: 10
   # allowed_user_ids: []            # Empty = allow all; add open_ids to restrict
@@ -72,6 +76,7 @@ feishu_bot:
   #       path: "/path/to/project"
   #       restricted: true           # Restrict bash commands to paths within the project directory
   #       model: "claude-opus-4-7"  # Default model for this project (inherits global if unset)
+  #       backend: "codex"           # Per-project backend override (claude | codex)
   projects:
     my-project:
       path: "/path/to/your/project"

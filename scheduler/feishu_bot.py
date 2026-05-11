@@ -82,6 +82,7 @@ MODE_ALIASES = {
     "ask": "default",  # Ask before edits
     "auto": "auto",  # Auto-determine permissions (new in SDK 0.1.60)
     "edits": "acceptEdits",  # Auto-accept file edits (previously named 'auto')
+    "bypass": "bypassPermissions",  # Full bypass — never ask, do everything
 }
 
 # Reverse mapping for display: SDK permission_mode → user-friendly name
@@ -219,7 +220,7 @@ class FeishuBotServer:
         self.default_backend: str = bot_config.get("default_backend", "claude")
         # Default permission mode applied to new sessions when the user
         # hasn't called /mode in the chat.  Accepts either the friendly
-        # alias (plan/ask/auto/edits) or the raw SDK value
+        # alias (plan/ask/auto/edits/bypass) or the raw SDK value
         # (default/acceptEdits/plan/auto/bypassPermissions/dontAsk).
         # See PermissionMode in claude_agent_sdk/types.py.
         _raw_mode = bot_config.get("mode", config.get("defaults", {}).get("mode", "auto"))
