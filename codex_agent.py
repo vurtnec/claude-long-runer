@@ -351,9 +351,19 @@ class CodexAgentClient:
         if self._approval_policy:
             thread_kwargs["approval_policy"] = self._approval_policy
 
+        # Enable web browsing by default so the model can search / fetch URLs.
+        # WebSearchMode: disabled | cached | live  — "live" hits the network.
+        # Caller can override via the `config` extra kwarg.
+        thread_kwargs["config"] = {"web_search": "live"}
+
         # Forward any extra kwargs the caller provided that match thread_start's API
-        # (unknown kwargs would crash thread_start, so callers must know the schema)
-        thread_kwargs.update(self._extra)
+        # (unknown kwargs would crash thread_start, so callers must know the schema).
+        # If caller passes their own `config`, shallow-merge so web_search stays on
+        # unless they explicitly override it.
+        extra = dict(self._extra)
+        if isinstance(extra.get("config"), dict):
+            thread_kwargs["config"] = {**thread_kwargs["config"], **extra.pop("config")}
+        thread_kwargs.update(extra)
 
         if self._resume_thread_id:
             logger.info("Resuming Codex thread %s", self._resume_thread_id[:8])
