@@ -46,7 +46,7 @@ history:
 
 # Default values for all scheduled tasks (overridable per schedule)
 defaults:
-  model: "claude-opus-4-7"
+  model: "gpt-5.5"
   effort: "xhigh" # Thinking depth: low, medium, high, xhigh, max (omit to use CLI default)
   max_iterations: 10
   timeout_minutes: 120
@@ -56,8 +56,8 @@ feishu_bot:
   enabled: true # Start bot alongside daemon
   # Default backend for new sessions: claude or codex.
   # Users can override per-chat with /backend, or per-project below.
-  default_backend: "claude"
-  model: "claude-opus-4-7"
+  default_backend: "codex"
+  model: "gpt-5.5"
   effort: "xhigh" # Default effort for bot sessions (omit to use CLI default)
   # Default permission mode for new bot sessions when /mode is not used.
   # Friendly aliases: plan | ask | auto | edits | bypass

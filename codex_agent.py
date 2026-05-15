@@ -168,9 +168,22 @@ async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
     config = AppServerConfig(codex_bin=codex_bin) if codex_bin else None
     codex = AsyncCodex(config=config) if config else AsyncCodex()
 
+    # Codex's thread_list defaults to "interactive sources" only — which
+    # excludes threads tagged `unknown`.  Sessions started via the
+    # app-server SDK (i.e. our Feishu bot) come back as `unknown`, so the
+    # default filter silently hides them.  Pass an explicit list that
+    # includes the kinds a user would want to resume from the bot.
+    source_kinds = ["cli", "vscode", "exec", "appServer", "unknown"]
+
     try:
         await codex.__aenter__()
-        result = await codex.thread_list(cwd=project_dir, limit=limit)
+        result = await codex.thread_list(
+            cwd=project_dir,
+            limit=limit,
+            source_kinds=source_kinds,
+            sort_key="updated_at",
+            sort_direction="desc",
+        )
     except Exception as e:
         logger.warning("Codex thread_list failed for %s: %s", project_dir, e)
         try:
@@ -178,6 +191,18 @@ async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
         except Exception:
             pass
         return []
+
+    def _path_str(value, fallback: str) -> str:
+        # Codex SDK returns `cwd` as an `AbsolutePathBuf` RootModel; unwrap
+        # to a plain str so callers can pass it to `pathlib.Path(...)`.
+        if value is None:
+            return fallback
+        if isinstance(value, str):
+            return value
+        root = getattr(value, "root", None)
+        if isinstance(root, str):
+            return root
+        return str(value)
 
     threads: list[dict] = []
     for t in getattr(result, "data", []) or []:
@@ -190,7 +215,7 @@ async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
                 "summary": preview[:50],
                 "permission_mode": "default",  # Codex has no Claude-style modes
                 "project_alias": None,         # filled in by caller
-                "project_dir": getattr(t, "cwd", project_dir),
+                "project_dir": _path_str(getattr(t, "cwd", None), project_dir),
                 "created_at": created,
                 "last_active": updated,
                 "model": getattr(t, "model_provider", "") or "",
@@ -428,14 +453,16 @@ class CodexAgentClient:
                     continue
         except Exception as e:
             # Stream-level error — yield as ERROR event so the caller can
-            # decide how to handle it (e.g. show message to user)
+            # decide how to handle it (e.g. show message to user). Skip the
+            # trailing RESULT to keep the event contract symmetric with the
+            # Claude backend, which only emits RESULT on a real ResultMessage.
             logger.error("Codex stream error: %s", e)
             yield AgentEvent(
                 type=EventType.ERROR,
                 metadata={"error": str(e)},
             )
+            return
 
-        # Always emit a RESULT at the end so the caller knows we're done
         yield AgentEvent(
             type=EventType.RESULT,
             metadata={"session_id": self._session_id},

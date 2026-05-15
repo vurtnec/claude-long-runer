@@ -1198,6 +1198,30 @@ class FeishuBotServer:
                 f"Error: {e}\n\nSession has been reset. Please try again.",
             )
 
+    def _resolve_schedule_backend(
+        self, schedule, chat_id: str, project_dir: Path
+    ) -> str:
+        """Pick the agent backend for a /run-triggered schedule.
+
+        Priority (highest first):
+          1. schedule.task.backend  — explicit per-schedule override
+          2. active session.backend — match what the user is currently chatting with
+          3. _chat_backends[chat_id] — user's /backend override before any session
+          4. _project_backends[alias] — project-level default
+          5. self.default_backend  — global default
+        """
+        if schedule.task.backend:
+            return schedule.task.backend
+        session = self._sessions.get(chat_id)
+        if session and session.backend:
+            return session.backend
+        if chat_id in self._chat_backends:
+            return self._chat_backends[chat_id]
+        alias = self._get_project_alias(project_dir)
+        if alias and alias in self._project_backends:
+            return self._project_backends[alias]
+        return self.default_backend
+
     def _trigger_schedule(self, schedule_name: str, chat_id: str, message_id: str):
         """Trigger a predefined schedule by name."""
         if schedule_name not in self.schedules:
@@ -1221,8 +1245,13 @@ class FeishuBotServer:
             prompt = prompt.replace("{{today}}", today_str)
             prompt = prompt.replace("{{now}}", datetime.now().isoformat())
 
-            model = schedule.task.model or self.default_model
             project_dir = Path(schedule.task.project_dir).resolve()
+            backend = self._resolve_schedule_backend(schedule, chat_id, project_dir)
+            model = (
+                schedule.task.model
+                or BACKEND_DEFAULT_MODELS.get(backend)
+                or self.default_model
+            )
             default_timeout = self.config.get("defaults", {}).get("timeout_minutes", 30)
             timeout = schedule.timeout_minutes or default_timeout
             max_turns = schedule.task.max_turns or 5
@@ -1237,6 +1266,7 @@ class FeishuBotServer:
                         schedule_name,
                         timeout,
                         max_turns,
+                        backend,
                     ),
                     self._loop,
                 )
@@ -1251,6 +1281,7 @@ class FeishuBotServer:
                             schedule_name,
                             timeout,
                             max_turns,
+                            backend,
                         )
                     ),
                     daemon=True,
@@ -1304,6 +1335,7 @@ class FeishuBotServer:
         schedule_name: str,
         timeout_minutes: int = 15,
         max_turns: int = 5,
+        backend: str = "claude",
     ):
         """Execute a schedule's inline task (one-shot, no session persistence)."""
         from .inline_executor import run_inline_task
@@ -1316,6 +1348,7 @@ class FeishuBotServer:
                     project_dir=project_dir,
                     model=model,
                     max_turns=max_turns,
+                    backend=backend,
                 ),
                 timeout=timeout_minutes * 60,
             )

@@ -114,6 +114,7 @@ def parse_task_ref(data: dict) -> TaskRef:
         model=task_data.get("model"),
         effort=task_data.get("effort"),
         max_iterations=task_data.get("max_iterations"),
+        backend=task_data.get("backend"),
         prompt=task_data.get("prompt"),
         max_turns=task_data.get("max_turns"),
     )

@@ -448,12 +448,21 @@ class SchedulerDaemon:
         project_dir = Path(schedule.task.project_dir).resolve()
         project_dir.mkdir(parents=True, exist_ok=True)
 
+        backend = schedule.task.backend or "claude"
+
+        # When a non-Claude backend is requested but the schedule didn't pin a
+        # model, `model` here is still the global Claude default (resolved at
+        # the top of the run). Pass None instead so create_agent_client picks
+        # the backend's own default (e.g. "o3" for codex).
+        inline_model = model if (backend == "claude" or schedule.task.model) else None
+
         return await run_inline_task(
             prompt=prompt,
             project_dir=project_dir,
-            model=model,
+            model=inline_model,
             max_turns=max_turns,
             effort=effort,
+            backend=backend,
         )
 
     async def _send_notifications(self, notifications, context: Dict[str, Any]):
