@@ -147,6 +147,34 @@ def _unwrap_thread_item(item: Any) -> Any:
     return inner if inner is not None else item
 
 
+def _get_item_id(*objects: Any) -> str | None:
+    """
+    Best-effort item id extraction across Codex SDK model shapes.
+
+    Notification payloads and thread items have changed names across SDK
+    versions (`item_id`, `itemId`, nested `item.id`, RootModel-wrapped item).
+    The id is only used for de-duplicating streamed agent text, so failing to
+    find one should degrade to current-message comparison instead of raising.
+    """
+    for obj in objects:
+        if obj is None:
+            continue
+        for attr in ("item_id", "itemId", "id"):
+            value = getattr(obj, attr, None)
+            if value:
+                return str(value)
+
+        nested = getattr(obj, "item", None)
+        if nested is not None:
+            nested = _unwrap_thread_item(nested)
+            for attr in ("item_id", "itemId", "id"):
+                value = getattr(nested, attr, None)
+                if value:
+                    return str(value)
+
+    return None
+
+
 async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
     """
     List Codex threads for a project directory.
@@ -336,6 +364,9 @@ class CodexAgentClient:
         self._turn_handle: Any = None     # AsyncTurnHandle
         self._session_id: str | None = resume_thread_id
         self._connected: bool = False
+        self._streamed_agent_text: str = ""
+        self._streamed_agent_text_by_item: dict[str, str] = {}
+        self._current_streamed_agent_item_id: str | None = None
 
     # ── Identity ─────────────────────────────────────────────────────────
 
@@ -376,9 +407,19 @@ class CodexAgentClient:
         if self._approval_policy:
             thread_kwargs["approval_policy"] = self._approval_policy
 
+        # Enable web browsing by default so the model can search / fetch URLs.
+        # WebSearchMode: disabled | cached | live  — "live" hits the network.
+        # Caller can override via the `config` extra kwarg.
+        thread_kwargs["config"] = {"web_search": "live"}
+
         # Forward any extra kwargs the caller provided that match thread_start's API
-        # (unknown kwargs would crash thread_start, so callers must know the schema)
-        thread_kwargs.update(self._extra)
+        # (unknown kwargs would crash thread_start, so callers must know the schema).
+        # If caller passes their own `config`, shallow-merge so web_search stays on
+        # unless they explicitly override it.
+        extra = dict(self._extra)
+        if isinstance(extra.get("config"), dict):
+            thread_kwargs["config"] = {**thread_kwargs["config"], **extra.pop("config")}
+        thread_kwargs.update(extra)
 
         if self._resume_thread_id:
             logger.info("Resuming Codex thread %s", self._resume_thread_id[:8])
@@ -421,6 +462,9 @@ class CodexAgentClient:
         if self._effort:
             turn_kwargs["effort"] = self._effort
 
+        self._streamed_agent_text = ""
+        self._streamed_agent_text_by_item = {}
+        self._current_streamed_agent_item_id = None
         self._turn_handle = await self._thread.turn(TextInput(prompt), **turn_kwargs)
 
     async def receive_events(self) -> AsyncIterator[AgentEvent]:
@@ -549,6 +593,17 @@ class CodexAgentClient:
             if text is None and hasattr(payload, "content"):
                 text = str(payload.content)
         if text:
+            text = str(text)
+            if method.startswith("item/agentMessage/delta"):
+                item_id = _get_item_id(payload)
+                if item_id and item_id != self._current_streamed_agent_item_id:
+                    self._streamed_agent_text = ""
+                    self._current_streamed_agent_item_id = item_id
+                self._streamed_agent_text += text
+                if item_id:
+                    self._streamed_agent_text_by_item[item_id] = (
+                        self._streamed_agent_text_by_item.get(item_id, "") + text
+                    )
             return AgentEvent(type=EventType.TEXT, text=text)
         return None
 
@@ -589,9 +644,42 @@ class CodexAgentClient:
         elif item_type == "agentMessage":
             # Final assistant message — codex often emits only the completed
             # item (no per-token deltas), so this is what users actually see.
+            # When deltas were already emitted, completed is a full snapshot
+            # of the same message.  Returning it again makes short replies
+            # look doubled in Feishu (e.g. "1" -> "11").
             text = getattr(item, "text", None) or getattr(item, "content", None)
             if text:
-                return AgentEvent(type=EventType.TEXT, text=str(text))
+                text = str(text)
+                item_id = _get_item_id(payload, item)
+                streamed = (
+                    self._streamed_agent_text_by_item.get(item_id, "")
+                    if item_id
+                    else ""
+                )
+                if not streamed:
+                    streamed = self._streamed_agent_text
+
+                if streamed:
+                    if text == streamed:
+                        if item_id:
+                            self._streamed_agent_text_by_item.pop(item_id, None)
+                        self._streamed_agent_text = ""
+                        self._current_streamed_agent_item_id = None
+                        return None
+                    if text.startswith(streamed):
+                        suffix = text[len(streamed):]
+                        if item_id:
+                            self._streamed_agent_text_by_item.pop(item_id, None)
+                        self._streamed_agent_text = ""
+                        self._current_streamed_agent_item_id = None
+                        if suffix:
+                            return AgentEvent(type=EventType.TEXT, text=suffix)
+                        return None
+
+                    self._streamed_agent_text = ""
+                    self._current_streamed_agent_item_id = None
+
+                return AgentEvent(type=EventType.TEXT, text=text)
         return None
 
     def _on_tool_output(self, method: str, payload: Any) -> AgentEvent | None:
