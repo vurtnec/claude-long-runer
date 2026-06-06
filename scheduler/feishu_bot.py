@@ -1221,7 +1221,12 @@ class FeishuBotServer:
             prompt = prompt.replace("{{today}}", today_str)
             prompt = prompt.replace("{{now}}", datetime.now().isoformat())
 
-            model = schedule.task.model or self.default_model
+            backend = schedule.task.backend or self.default_backend
+            model = _resolve_schedule_model(
+                backend=backend,
+                schedule_model=schedule.task.model,
+                default_model=self.default_model,
+            )
             project_dir = Path(schedule.task.project_dir).resolve()
             default_timeout = self.config.get("defaults", {}).get("timeout_minutes", 30)
             timeout = schedule.timeout_minutes or default_timeout
@@ -1232,6 +1237,7 @@ class FeishuBotServer:
                     self._execute_schedule_and_reply(
                         prompt,
                         project_dir,
+                        backend,
                         model,
                         chat_id,
                         schedule_name,
@@ -1246,6 +1252,7 @@ class FeishuBotServer:
                         self._execute_schedule_and_reply(
                             prompt,
                             project_dir,
+                            backend,
                             model,
                             chat_id,
                             schedule_name,
@@ -1257,7 +1264,18 @@ class FeishuBotServer:
                 )
                 thread.start()
         elif schedule.task.task_type == "standard" and schedule.task.name:
-            model = schedule.task.model or self.default_model
+            backend = schedule.task.backend or self.default_backend
+            if backend != "claude":
+                self._send_message(
+                    chat_id,
+                    f"[{schedule_name}] Standard schedules currently support backend='claude' only.",
+                )
+                return
+            model = _resolve_schedule_model(
+                backend=backend,
+                schedule_model=schedule.task.model,
+                default_model=self.default_model,
+            )
             project_dir = Path(schedule.task.project_dir).resolve()
             max_iters = schedule.task.max_iterations or 10
             default_timeout = self.config.get("defaults", {}).get("timeout_minutes", 30)
@@ -1299,6 +1317,7 @@ class FeishuBotServer:
         self,
         prompt: str,
         project_dir: Path,
+        backend: str,
         model: str,
         chat_id: str,
         schedule_name: str,
@@ -1314,6 +1333,7 @@ class FeishuBotServer:
                 run_inline_task(
                     prompt=prompt,
                     project_dir=project_dir,
+                    backend=backend,
                     model=model,
                     max_turns=max_turns,
                 ),
@@ -2499,6 +2519,33 @@ class FeishuBotServer:
                 chat_id,
                 f"Failed to resume session: {e}\n\nPlease start a new conversation.",
             )
+
+
+def _resolve_schedule_model(
+    backend: str,
+    schedule_model: str | None,
+    default_model: str | None,
+) -> str:
+    if schedule_model:
+        return schedule_model
+
+    backend = (backend or "claude").lower().strip()
+    if backend == "codex":
+        if (
+            not default_model
+            or default_model in {"claude", "codex"}
+            or default_model.startswith("claude-")
+        ):
+            return BACKEND_DEFAULT_MODELS["codex"]
+    elif backend == "claude":
+        if (
+            not default_model
+            or default_model in {"claude", "codex"}
+            or default_model.startswith("gpt-")
+        ):
+            return BACKEND_DEFAULT_MODELS["claude"]
+
+    return default_model or BACKEND_DEFAULT_MODELS.get(backend, BACKEND_DEFAULT_MODELS["claude"])
 
 
 def _load_config(config_path: str) -> dict:

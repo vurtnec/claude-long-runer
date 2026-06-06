@@ -35,11 +35,18 @@ from .notifiers.base import BaseNotifier
 from .notifiers.dingtalk_notifier import DingTalkNotifier
 from .notifiers.email_notifier import EmailNotifier
 from .notifiers.feishu_notifier import FeishuNotifier
-from .notifiers.teams_reply_notifier import TeamsReplyNotifier
 from .notifiers.webhook_notifier import WebhookNotifier
 from .notifiers.wechat_notifier import WeChatNotifier
 from .schedule_loader import load_all_schedules, resolve_env_vars
 from .trigger_engine import TriggerEngine
+
+try:
+    from .notifiers.teams_reply_notifier import TeamsReplyNotifier
+except ImportError as e:
+    TeamsReplyNotifier = None
+    TEAMS_REPLY_IMPORT_ERROR = e
+else:
+    TEAMS_REPLY_IMPORT_ERROR = None
 
 
 class SchedulerDaemon:
@@ -84,10 +91,13 @@ class SchedulerDaemon:
             "dingtalk": DingTalkNotifier(notif_config),
             "webhook": WebhookNotifier(notif_config),
             "email": EmailNotifier(notif_config),
+        }
+        if TeamsReplyNotifier is not None:
             # Replies into the originating Teams chat for whitelisted
             # senders only; designed to pair with a teams_message trigger.
-            "teams_reply": TeamsReplyNotifier(notif_config),
-        }
+            self._notifiers["teams_reply"] = TeamsReplyNotifier(notif_config)
+        elif TEAMS_REPLY_IMPORT_ERROR is not None:
+            print(f"  Teams reply notifier disabled: {TEAMS_REPLY_IMPORT_ERROR}")
 
         # Defaults
         self.defaults = self.config.get("defaults", {})
@@ -271,8 +281,18 @@ class SchedulerDaemon:
                     value = value.replace(f"{{{{{tvar}}}}}", str(tval))
             resolved_params[key] = value
 
-        # Determine model and max_iterations (schedule > defaults > hardcoded)
-        model = schedule.task.model or self.defaults.get("model", "claude-opus-4-7")
+        # Determine backend/model (schedule > defaults > backend default)
+        backend = (
+            schedule.task.backend
+            or self.defaults.get("backend")
+            or self.defaults.get("default_backend")
+            or "claude"
+        )
+        model = _resolve_model_for_backend(
+            backend=backend,
+            schedule_model=schedule.task.model,
+            default_model=self.defaults.get("model"),
+        )
         effort = schedule.task.effort or self.defaults.get("effort")
 
         success = False
@@ -292,7 +312,7 @@ class SchedulerDaemon:
                     # Inline task: direct prompt execution
                     result = await asyncio.wait_for(
                         self._execute_inline(
-                            schedule, model, template_vars, effort=effort
+                            schedule, backend, model, template_vars, effort=effort
                         ),
                         timeout=timeout_minutes * 60,
                     )
@@ -305,7 +325,7 @@ class SchedulerDaemon:
                     # Standard task: use existing run_long_task()
                     result = await asyncio.wait_for(
                         self._execute_standard(
-                            schedule, model, resolved_params, effort=effort
+                            schedule, backend, model, resolved_params, effort=effort
                         ),
                         timeout=timeout_minutes * 60,
                     )
@@ -383,11 +403,14 @@ class SchedulerDaemon:
     async def _execute_standard(
         self,
         schedule: ScheduleDefinition,
+        backend: str,
         model: str,
         resolved_params: Dict[str, Any],
         effort: str | None = None,
     ) -> Dict[str, Any]:
         """Execute a standard task via run_long_task()."""
+        if backend != "claude":
+            raise ValueError("standard scheduled tasks currently support backend='claude' only")
         max_iters = schedule.task.max_iterations or self.defaults.get(
             "max_iterations", 10
         )
@@ -433,6 +456,7 @@ class SchedulerDaemon:
     async def _execute_inline(
         self,
         schedule: ScheduleDefinition,
+        backend: str,
         model: str,
         template_vars: Dict[str, Any],
         effort: str | None = None,
@@ -451,6 +475,7 @@ class SchedulerDaemon:
         return await run_inline_task(
             prompt=prompt,
             project_dir=project_dir,
+            backend=backend,
             model=model,
             max_turns=max_turns,
             effort=effort,
@@ -477,6 +502,40 @@ class SchedulerDaemon:
             os._exit(1)
         print("\nShutdown signal received...")
         self._running = False
+
+
+def _default_model_for_backend(backend: str) -> str:
+    backend = (backend or "claude").lower().strip()
+    if backend == "codex":
+        return "gpt-5.5"
+    return "claude-opus-4-7"
+
+
+def _resolve_model_for_backend(
+    backend: str,
+    schedule_model: str | None,
+    default_model: str | None,
+) -> str:
+    if schedule_model:
+        return schedule_model
+
+    backend = (backend or "claude").lower().strip()
+    if backend == "codex":
+        if (
+            not default_model
+            or default_model in {"claude", "codex"}
+            or default_model.startswith("claude-")
+        ):
+            return _default_model_for_backend(backend)
+    elif backend == "claude":
+        if (
+            not default_model
+            or default_model in {"claude", "codex"}
+            or default_model.startswith("gpt-")
+        ):
+            return _default_model_for_backend(backend)
+
+    return default_model or _default_model_for_backend(backend)
 
 
 def main():

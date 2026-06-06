@@ -17,12 +17,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from claude_agent_sdk import ClaudeSDKClient
 
+from agent_protocol import EventType, create_agent_client
 from client import create_client
 
 
 async def run_inline_task(
     prompt: str,
     project_dir: Path,
+    backend: str = "claude",
     model: str = "claude-opus-4-7",
     max_turns: int = 3,
     effort: str | None = None,
@@ -39,8 +41,19 @@ async def run_inline_task(
     Returns:
         Dict with keys: success, response_text, turns_used
     """
+    backend = (backend or "claude").lower().strip()
     print(f"\n  Inline task: sending prompt ({len(prompt)} chars)")
-    print(f"  Model: {model}, Max turns: {max_turns}")
+    print(f"  Backend: {backend}, Model: {model}, Max turns: {max_turns}")
+
+    if backend != "claude":
+        return await _run_agent_protocol_inline_task(
+            prompt=prompt,
+            project_dir=project_dir,
+            backend=backend,
+            model=model,
+            max_turns=max_turns,
+            effort=effort,
+        )
 
     # Track only the FINAL assistant answer (the tool-free closing message),
     # not the running concatenation of every intermediate thought. Without
@@ -144,3 +157,74 @@ async def run_inline_task(
             "turns_used": turns_used,
             "error": str(e),
         }
+
+
+async def _run_agent_protocol_inline_task(
+    prompt: str,
+    project_dir: Path,
+    backend: str,
+    model: str,
+    max_turns: int,
+    effort: str | None,
+) -> Dict[str, Any]:
+    """Execute an inline prompt through the backend-agnostic agent protocol."""
+    final_response = ""
+    turns_used = 0
+    error_msg = ""
+    client = None
+
+    try:
+        client = create_agent_client(
+            backend=backend,
+            project_dir=str(project_dir),
+            model=model,
+            max_turns=max_turns,
+            effort=effort,
+            permission_mode="never" if backend == "codex" else None,
+        )
+        await client.connect()
+        await client.send_message(prompt)
+        turns_used = 1
+
+        async for event in client.receive_events():
+            if event.type == EventType.TEXT and event.text:
+                final_response += event.text
+                print(event.text, end="", flush=True)
+            elif event.type == EventType.TOOL_USE:
+                print(f"\n[Tool: {event.tool_name}]", flush=True)
+                if event.tool_input is not None:
+                    input_str = str(event.tool_input)
+                    if len(input_str) > 200:
+                        print(f"   Input: {input_str[:200]}...", flush=True)
+                    else:
+                        print(f"   Input: {input_str}", flush=True)
+            elif event.type == EventType.TOOL_RESULT:
+                if event.is_error:
+                    print(f"   [Error] {str(event.result_content)[:500]}", flush=True)
+                else:
+                    print("   [Done]", flush=True)
+            elif event.type == EventType.ERROR:
+                error_msg = str(event.metadata.get("error") or "Agent backend error")
+                print(f"   [Error] {error_msg}", flush=True)
+
+        print("\n" + "-" * 70 + "\n")
+        return {
+            "success": not bool(error_msg),
+            "response_text": final_response,
+            "turns_used": turns_used,
+            **({"error": error_msg} if error_msg else {}),
+        }
+    except Exception as e:
+        print(f"  Inline task error: {e}")
+        return {
+            "success": False,
+            "response_text": final_response,
+            "turns_used": turns_used,
+            "error": str(e),
+        }
+    finally:
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass

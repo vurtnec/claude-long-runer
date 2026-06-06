@@ -65,6 +65,7 @@ class TaskRef:
     task_type: str = "standard"  # "standard" | "inline"
     params: Dict[str, Any] = field(default_factory=dict)
     project_dir: str = "."
+    backend: Optional[str] = None
     model: Optional[str] = None
     effort: Optional[str] = None
     max_iterations: Optional[int] = None

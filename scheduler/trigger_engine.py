@@ -13,7 +13,14 @@ from .triggers.composite_trigger import CompositeTrigger
 from .triggers.cron_trigger import CronTrigger
 from .triggers.file_trigger import FileChangeTrigger
 from .triggers.http_trigger import HttpConditionTrigger
-from .triggers.teams_trigger import TeamsMessageTrigger
+
+try:
+    from .triggers.teams_trigger import TeamsMessageTrigger
+except ImportError as e:
+    TeamsMessageTrigger = None
+    TEAMS_TRIGGER_IMPORT_ERROR = e
+else:
+    TEAMS_TRIGGER_IMPORT_ERROR = None
 
 
 def create_trigger(config: TriggerConfig) -> BaseTrigger:
@@ -43,6 +50,10 @@ def create_trigger(config: TriggerConfig) -> BaseTrigger:
     elif config.type == TriggerType.HTTP_CONDITION:
         return HttpConditionTrigger(config_dict)
     elif config.type == TriggerType.TEAMS_MESSAGE:
+        if TeamsMessageTrigger is None:
+            raise ImportError(
+                f"teams_message trigger requires optional dependencies: {TEAMS_TRIGGER_IMPORT_ERROR}"
+            )
         return TeamsMessageTrigger(config_dict)
     elif config.type == TriggerType.COMPOSITE:
         sub_triggers = [create_trigger(tc) for tc in config.triggers]

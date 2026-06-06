@@ -31,6 +31,7 @@ scheduler_history.json
 progress.txt
 claude-progress.txt
 .claude_settings.json
+data/market/
 
 # Logs
 *.log

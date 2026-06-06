@@ -46,6 +46,7 @@ history:
 
 # Default values for all scheduled tasks (overridable per schedule)
 defaults:
+  backend: "claude" # claude | codex. Schedules can override per task.
   model: "claude-opus-4-7"
   effort: "xhigh" # Thinking depth: low, medium, high, xhigh, max (omit to use CLI default)
   max_iterations: 10
