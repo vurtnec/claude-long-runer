@@ -30,9 +30,14 @@ def create_trigger(config: TriggerConfig) -> BaseTrigger:
         "chat_topic_contains": config.chat_topic_contains,
         "chat_id": config.chat_id,
         "sender_displayname": config.sender_displayname,
+        "allowed_chat_ids": config.allowed_chat_ids,
+        "allowed_chat_topic_contains": config.allowed_chat_topic_contains,
+        "allowed_sender_displaynames": config.allowed_sender_displaynames,
+        "allowed_sender_ids": config.allowed_sender_ids,
         "content_pattern": config.content_pattern,
         "match_html": config.match_html,
         "exclude_self": config.exclude_self,
+        "scan_chat_limit": config.scan_chat_limit,
         "min_message_length": config.min_message_length,
     }
 

@@ -107,6 +107,7 @@ CODEX_MODEL_ALIASES = {
     "gpt-5.3-codex": "gpt-5.3-codex",
     "gpt-5.2": "gpt-5.2",
 }
+CODEX_MODEL_IDS = set(CODEX_MODEL_ALIASES.values())
 CODEX_MODEL_DISPLAY = {v: k for k, v in CODEX_MODEL_ALIASES.items()}
 
 # Default models per backend
@@ -964,16 +965,16 @@ class FeishuBotServer:
             loop.close()
 
     async def _execute_with_timeout(self, text: str, chat_id: str, message_id: str):
-        """Wrapper that adds a 30-minute timeout to _execute_and_reply."""
+        """Wrapper that adds a 1-hour timeout to _execute_and_reply."""
         try:
             await asyncio.wait_for(
                 self._execute_and_reply(text, chat_id, message_id),
-                timeout=1800,  # 30 minutes
+                timeout=3600,  # 1 hour
             )
         except asyncio.TimeoutError:
             self._send_message(
                 chat_id,
-                "Response timed out after 30 minutes.\n"
+                "Response timed out after 1 hour.\n"
                 "The session is still active — try sending a shorter request.",
             )
 
@@ -1026,6 +1027,10 @@ class FeishuBotServer:
             not project_alias or project_alias not in self._project_models
         ):
             model = BACKEND_DEFAULT_MODELS.get(backend, model)
+
+        model = self._resolve_model_for_backend(backend, model)
+        if chat_id in self._chat_models:
+            self._chat_models[chat_id] = model
 
         # Create new session
         restriction_tag = " [RESTRICTED]" if restricted else ""
@@ -2053,6 +2058,15 @@ class FeishuBotServer:
                 return alias
         return None
 
+    def _resolve_model_for_backend(self, backend: str, model: str | None) -> str:
+        """Return a model id that is valid for the selected backend."""
+        default = BACKEND_DEFAULT_MODELS.get(backend, self.default_model)
+        if not model:
+            return default
+        if backend == "codex" and model not in CODEX_MODEL_IDS:
+            return default
+        return model
+
     def _load_session_history(self) -> dict:
         """Load session history from disk."""
         if SESSION_HISTORY_FILE.exists():
@@ -2084,6 +2098,9 @@ class FeishuBotServer:
                 entry = existing
                 break
 
+        model = self._resolve_model_for_backend(session.backend, session.model)
+        session.model = model
+
         if entry is None:
             entry = {
                 "session_id": session.session_id,
@@ -2096,7 +2113,7 @@ class FeishuBotServer:
                 "project_dir": str(session.project_dir),
                 "created_at": session.created_at.isoformat(),
                 "last_active": session.last_active.isoformat(),
-                "model": session.model,
+                "model": model,
                 "backend": session.backend,
                 "source": "bot",
             }
@@ -2105,7 +2122,7 @@ class FeishuBotServer:
             # Update existing entry
             entry["last_active"] = session.last_active.isoformat()
             entry["permission_mode"] = session.permission_mode
-            entry["model"] = session.model
+            entry["model"] = model
             entry["backend"] = session.backend
             if session.custom_title:
                 entry["summary"] = session.custom_title
@@ -2445,11 +2462,8 @@ class FeishuBotServer:
             chat_id, self.default_backend
         )
         self._chat_backends[chat_id] = entry_backend
-        # Use entry's model if present and looks valid for the backend; else
-        # fall back to the backend's default
-        model = entry.get("model") or BACKEND_DEFAULT_MODELS.get(
-            entry_backend, self.default_model
-        )
+        model = self._resolve_model_for_backend(entry_backend, entry.get("model"))
+        entry["model"] = model
         self._chat_models[chat_id] = model
 
         # Resume asynchronously
@@ -2481,9 +2495,8 @@ class FeishuBotServer:
             )
             self._chat_backends[chat_id] = backend
 
-            model = entry.get("model") or BACKEND_DEFAULT_MODELS.get(
-                backend, self.default_model
-            )
+            model = self._resolve_model_for_backend(backend, entry.get("model"))
+            entry["model"] = model
             mode = entry.get("permission_mode", "acceptEdits")
             print(
                 f"  [Session] Resuming session {session_id[:8]}... for chat {chat_id[:8]}... (backend: {backend}, project: {project_dir}, model: {model}, mode: {mode})"

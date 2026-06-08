@@ -223,7 +223,7 @@ def create_agent_client(
 
         return CodexAgentClient(
             project_dir=project_dir,
-            model=model or "o3",
+            model=model or "gpt-5.5",
             approval_policy=permission_mode,
             resume_thread_id=resume,
             effort=effort,
