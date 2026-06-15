@@ -20,7 +20,8 @@ task:
     2. Analyze key market outlook highlights for today
     3. Summarize recent tech news highlights
     Please keep it concise.
-  model: "claude-opus-4-7"
+  backend: "codex"
+  model: "gpt-5.5"
   max_turns: 3
   project_dir: "."
 

@@ -271,8 +271,14 @@ class SchedulerDaemon:
                     value = value.replace(f"{{{{{tvar}}}}}", str(tval))
             resolved_params[key] = value
 
-        # Determine model and max_iterations (schedule > defaults > hardcoded)
-        model = schedule.task.model or self.defaults.get("model", "claude-opus-4-7")
+        # Determine backend/model (schedule > defaults > backend default)
+        backend = schedule.task.backend or self.defaults.get("backend", "codex")
+        if schedule.task.model:
+            model = schedule.task.model
+        elif backend == "codex":
+            model = self.defaults.get("model", "gpt-5.5")
+        else:
+            model = None
         effort = schedule.task.effort or self.defaults.get("effort")
 
         success = False
@@ -292,7 +298,11 @@ class SchedulerDaemon:
                     # Inline task: direct prompt execution
                     result = await asyncio.wait_for(
                         self._execute_inline(
-                            schedule, model, template_vars, effort=effort
+                            schedule,
+                            model,
+                            template_vars,
+                            effort=effort,
+                            backend=backend,
                         ),
                         timeout=timeout_minutes * 60,
                     )
@@ -305,7 +315,11 @@ class SchedulerDaemon:
                     # Standard task: use existing run_long_task()
                     result = await asyncio.wait_for(
                         self._execute_standard(
-                            schedule, model, resolved_params, effort=effort
+                            schedule,
+                            model,
+                            resolved_params,
+                            effort=effort,
+                            backend=backend,
                         ),
                         timeout=timeout_minutes * 60,
                     )
@@ -383,9 +397,10 @@ class SchedulerDaemon:
     async def _execute_standard(
         self,
         schedule: ScheduleDefinition,
-        model: str,
+        model: str | None,
         resolved_params: Dict[str, Any],
         effort: str | None = None,
+        backend: str = "codex",
     ) -> Dict[str, Any]:
         """Execute a standard task via run_long_task()."""
         max_iters = schedule.task.max_iterations or self.defaults.get(
@@ -397,7 +412,8 @@ class SchedulerDaemon:
         print(f"  Executing standard task: {schedule.task.name}")
         print(f"  Project dir: {project_dir}")
         print(
-            f"  Model: {model}, Max iterations: {max_iters}, Effort: {effort or 'default'}"
+            f"  Backend: {backend}, Model: {model or '(backend default)'}, "
+            f"Max iterations: {max_iters}, Effort: {effort or 'default'}"
         )
 
         success = await run_long_task(
@@ -408,6 +424,7 @@ class SchedulerDaemon:
             max_iterations=max_iters,
             resume=False,
             effort=effort,
+            backend=backend,
         )
 
         # Read state file for last_response
@@ -433,9 +450,10 @@ class SchedulerDaemon:
     async def _execute_inline(
         self,
         schedule: ScheduleDefinition,
-        model: str,
+        model: str | None,
         template_vars: Dict[str, Any],
         effort: str | None = None,
+        backend: str = "codex",
     ) -> Dict[str, Any]:
         """Execute an inline prompt task."""
         prompt = schedule.task.prompt or ""
@@ -448,18 +466,10 @@ class SchedulerDaemon:
         project_dir = Path(schedule.task.project_dir).resolve()
         project_dir.mkdir(parents=True, exist_ok=True)
 
-        backend = schedule.task.backend or "claude"
-
-        # When a non-Claude backend is requested but the schedule didn't pin a
-        # model, `model` here is still the global Claude default (resolved at
-        # the top of the run). Pass None instead so create_agent_client picks
-        # the backend's own default (e.g. "o3" for codex).
-        inline_model = model if (backend == "claude" or schedule.task.model) else None
-
         return await run_inline_task(
             prompt=prompt,
             project_dir=project_dir,
-            model=inline_model,
+            model=model,
             max_turns=max_turns,
             effort=effort,
             backend=backend,

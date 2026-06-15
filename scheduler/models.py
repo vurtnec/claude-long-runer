@@ -74,7 +74,7 @@ class TaskRef:
     effort: Optional[str] = None
     max_iterations: Optional[int] = None
     # "claude" | "codex" — picks the agent backend used to run this task.
-    # None means "use the caller's default" (bot session backend, or "claude"
+    # None means "use the caller's default" (bot session backend, or "codex"
     # in the daemon).
     backend: Optional[str] = None
     # Inline task fields

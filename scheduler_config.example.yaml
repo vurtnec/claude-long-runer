@@ -46,6 +46,7 @@ history:
 
 # Default values for all scheduled tasks (overridable per schedule)
 defaults:
+  backend: "codex"
   model: "gpt-5.5"
   effort: "xhigh" # Thinking depth: low, medium, high, xhigh, max (omit to use CLI default)
   max_iterations: 10
@@ -75,13 +76,14 @@ feishu_bot:
   #     alias:
   #       path: "/path/to/project"
   #       restricted: true           # Restrict bash commands to paths within the project directory
-  #       model: "claude-opus-4-7"  # Default model for this project (inherits global if unset)
+  #       model: "gpt-5.5"          # Default model for this project (inherits global if unset)
   #       backend: "codex"           # Per-project backend override (claude | codex)
   projects:
     my-project:
       path: "/path/to/your/project"
       restricted: true # Enable directory restriction
-      model: "claude-opus-4-7"
+      backend: "codex"
+      model: "gpt-5.5"
       effort: "high" # Per-project effort level
     another: "/path/to/another/project" # Legacy format, no restriction, inherits global model
   default_project: "my-project" # Default project alias

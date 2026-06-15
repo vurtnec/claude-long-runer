@@ -50,7 +50,7 @@ class ClaudeAgentClient:
     def __init__(
         self,
         project_dir: str | None = None,
-        model: str = "claude-opus-4-7",
+        model: str = "claude-sonnet-4-6",
         permission_mode: str | None = None,
         resume: str | None = None,
         restricted: bool = False,

@@ -2,8 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Built with Claude Agent SDK](https://img.shields.io/badge/Built%20with-Claude%20Agent%20SDK-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code/sdk)
-[![Codex SDK Support](https://img.shields.io/badge/Codex%20SDK-supported-10a37f.svg)](https://github.com/openai/codex)
+[![Default backend: Codex](https://img.shields.io/badge/default-Codex%20%2F%20GPT--5.5-10a37f.svg)](https://github.com/openai/codex)
+[![Claude backend optional](https://img.shields.io/badge/Claude%20backend-optional-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code/sdk)
 
 **Weave AI agents into schedules, team chat, and persistent workflows — backed by Claude or Codex.**
 
@@ -24,8 +24,8 @@ Claude Code (and now OpenAI Codex) is powerful — but interactive. You sit ther
 ### Prerequisites
 
 - [Python 3.10+](https://www.python.org/downloads/)
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (provides the Claude Agent SDK)
-- *(Optional)* [Codex CLI](https://github.com/openai/codex) — only needed if you want to use the Codex backend. Install via `npm install -g @openai/codex` or `brew install codex`, then `codex login`.
+- [Codex CLI](https://github.com/openai/codex) — the default backend. Install via `npm install -g @openai/codex` or `brew install codex`, then `codex login`.
+- *(Optional)* [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — only needed if you explicitly switch to the Claude backend.
 
 ### 1. Install
 
@@ -36,7 +36,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Optional: install the Codex Python SDK to enable the Codex backend.
+# Install the Codex Python SDK.
 # Not yet on PyPI — install from source, pinned to a stable Codex CLI tag:
 pip install git+https://github.com/openai/codex.git@rust-v0.125.0#subdirectory=sdk/python
 ```
@@ -83,7 +83,7 @@ python -m scheduler.feishu_bot
 python -m scheduler.daemon
 ```
 
-That's it! @mention the bot in your Feishu group chat and start talking to Claude.
+That's it! @mention the bot in your Feishu group chat and start talking to Codex.
 
 ---
 
@@ -105,7 +105,8 @@ python long_run_executor.py \
 | `--params` | JSON params for the task |
 | `--project-dir` | Working directory (default: `.`) |
 | `--max-iterations` | Max iterations (default: 5) |
-| `--model` | Claude model (default: claude-opus-4-7) |
+| `--backend` | Agent backend (default: `codex`) |
+| `--model` | Agent model (default: `gpt-5.5`) |
 | `--resume` | Resume from last saved state |
 
 **Built-in templates:**
@@ -143,7 +144,8 @@ trigger:
 task:
   type: inline
   prompt: "Today is {{today}}. Summarize market highlights and tech news."
-  model: "claude-opus-4-7"
+  backend: "codex"
+  model: "gpt-5.5"
   max_turns: 3
 notifications:
   on_success:
@@ -216,8 +218,8 @@ Each chat picks one backend at a time. Switching resets the session (similar to 
 
 | Aspect | Claude | Codex |
 |--------|--------|-------|
-| Default model | `claude-opus-4-7` | `gpt-5.5` |
-| Available models | `opus`, `sonnet`, `haiku` | `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2` |
+| Default model | `claude-sonnet-4-6` | `gpt-5.5` |
+| Available models | `sonnet`, `haiku` | `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2` |
 | Permission modes | ✅ Dynamic via `/mode` | ⚠️ Set at session start only |
 | Custom slash commands | ✅ `~/.claude/commands/*.md` | ✅ Codex CLI's mechanism |
 | Session resume | ✅ Per-chat history | ✅ Per-chat history (separate from Claude) |
@@ -226,7 +228,7 @@ Per-project default backend can be configured in `scheduler_config.yaml`:
 
 ```yaml
 feishu_bot:
-  default_backend: claude         # global default
+  default_backend: codex          # global default
   projects:
     my-python-app:
       path: /path/to/app
@@ -234,8 +236,8 @@ feishu_bot:
       model: gpt-5.5
     my-web-app:
       path: /path/to/web
-      backend: claude
-      model: claude-sonnet-4-6
+      backend: codex
+      model: gpt-5.5
 ```
 
 Priority: `/backend` command > project config > `default_backend`.

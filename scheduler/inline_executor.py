@@ -25,7 +25,7 @@ async def run_inline_task(
     model: str | None = None,
     max_turns: int = 3,
     effort: str | None = None,
-    backend: str = "claude",
+    backend: str = "codex",
 ) -> Dict[str, Any]:
     """
     Execute an inline prompt task.
@@ -56,6 +56,7 @@ async def run_inline_task(
     # without a clean tool-free message (e.g. max_turns exhausted mid-flight).
     last_text_seen = ""
     turns_used = 0
+    run_error = ""
 
     def _flush_current():
         nonlocal final_response, current_text, current_has_tool_use, last_text_seen
@@ -113,8 +114,18 @@ async def run_inline_task(
                     print("   [Done]", flush=True)
 
             elif event.type == EventType.ERROR:
-                error_msg = event.metadata.get("error", "Unknown error")
-                print(f"\n  [Error] {error_msg}", flush=True)
+                run_error = event.metadata.get("error", "Unknown error")
+                print(f"\n  [Error] {run_error}", flush=True)
+
+            elif event.type == EventType.RESULT:
+                if event.metadata.get("is_error"):
+                    run_error = (
+                        event.metadata.get("error")
+                        or current_text
+                        or final_response
+                        or last_text_seen
+                        or "Agent returned an error"
+                    )
 
         # Flush whatever was in flight when the stream ended
         _flush_current()
@@ -125,6 +136,14 @@ async def run_inline_task(
         # notification isn't empty.
         if not final_response:
             final_response = last_text_seen
+
+        if run_error:
+            return {
+                "success": False,
+                "response_text": final_response,
+                "turns_used": turns_used,
+                "error": run_error,
+            }
 
         return {
             "success": True,

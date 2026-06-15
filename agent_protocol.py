@@ -208,7 +208,7 @@ def create_agent_client(
 
         return ClaudeAgentClient(
             project_dir=project_dir,
-            model=model or "claude-opus-4-7",
+            model=model or "claude-sonnet-4-6",
             permission_mode=permission_mode,
             resume=resume,
             restricted=restricted,
