@@ -1486,7 +1486,7 @@ class FeishuBotServer:
             "/project — Show current project / switch project\n"
             "/backend [claude|codex] — Show or switch agent backend\n"
             "/mode [plan|ask|auto|edits] — Show or switch permission mode\n"
-            "/model [opus|sonnet|haiku|o3|o4-mini|gpt-5] — Show or switch model\n"
+            "/model [sonnet|haiku|gpt-5.5|gpt-5.4|gpt-5.4-mini|gpt-5.3-codex|gpt-5.2] — Show or switch model\n"
             "/effort [low|medium|high|xhigh|max] — Show or switch effort level\n"
             "/rename <title> — Rename current session\n"
             "/resume [number] — List recent sessions / resume by number\n"
