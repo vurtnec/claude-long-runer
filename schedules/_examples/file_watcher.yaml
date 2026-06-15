@@ -19,7 +19,8 @@ task:
   params:
     source_file: "{{trigger.changed_file}}"
   project_dir: "/path/to/project"
-  model: "claude-opus-4-7"
+  backend: "codex"
+  model: "gpt-5.5"
   max_iterations: 5
 
 notifications:

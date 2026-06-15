@@ -50,6 +50,19 @@ def resolve_env_vars(value: Any) -> Any:
     return value
 
 
+def _as_string_list(value: Any) -> List[str]:
+    """Normalize YAML scalars/lists into a stripped list of strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = [value]
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
 def parse_trigger_config(data: dict) -> TriggerConfig:
     """Parse a trigger configuration dict into a TriggerConfig."""
     trigger_type = TriggerType(data["type"])
@@ -72,9 +85,18 @@ def parse_trigger_config(data: dict) -> TriggerConfig:
         chat_topic_contains=data.get("chat_topic_contains"),
         chat_id=data.get("chat_id"),
         sender_displayname=data.get("sender_displayname"),
+        allowed_chat_ids=_as_string_list(data.get("allowed_chat_ids")),
+        allowed_chat_topic_contains=_as_string_list(
+            data.get("allowed_chat_topic_contains")
+        ),
+        allowed_sender_displaynames=_as_string_list(
+            data.get("allowed_sender_displaynames")
+        ),
+        allowed_sender_ids=_as_string_list(data.get("allowed_sender_ids")),
         content_pattern=data.get("content_pattern"),
         match_html=data.get("match_html", True),
         exclude_self=data.get("exclude_self", True),
+        scan_chat_limit=data.get("scan_chat_limit") or 15,
         min_message_length=data.get("min_message_length", 0),
     )
 
@@ -111,10 +133,10 @@ def parse_task_ref(data: dict) -> TaskRef:
         task_type=task_type,
         params=task_data.get("params", {}),
         project_dir=task_data.get("project_dir", "."),
-        backend=task_data.get("backend"),
         model=task_data.get("model"),
         effort=task_data.get("effort"),
         max_iterations=task_data.get("max_iterations"),
+        backend=task_data.get("backend"),
         prompt=task_data.get("prompt"),
         max_turns=task_data.get("max_turns"),
     )

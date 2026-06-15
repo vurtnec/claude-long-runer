@@ -25,7 +25,8 @@ task:
   params:
     pr_number: "{{trigger.http_response[0].number}}"
   project_dir: "/path/to/repo"
-  model: "claude-opus-4-7"
+  backend: "codex"
+  model: "gpt-5.5"
   max_iterations: 5
 
 notifications:

@@ -90,7 +90,6 @@ MODE_DISPLAY = {v: k for k, v in MODE_ALIASES.items()}
 
 # Model aliases: user-friendly names → model IDs
 MODEL_ALIASES = {
-    "opus": "claude-opus-4-7",
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5-20251001",
 }
@@ -107,11 +106,12 @@ CODEX_MODEL_ALIASES = {
     "gpt-5.3-codex": "gpt-5.3-codex",
     "gpt-5.2": "gpt-5.2",
 }
+CODEX_MODEL_IDS = set(CODEX_MODEL_ALIASES.values())
 CODEX_MODEL_DISPLAY = {v: k for k, v in CODEX_MODEL_ALIASES.items()}
 
 # Default models per backend
 BACKEND_DEFAULT_MODELS = {
-    "claude": "claude-opus-4-7",
+    "claude": "claude-sonnet-4-6",
     "codex": "gpt-5.5",
 }
 
@@ -145,8 +145,8 @@ class ChatSession:
         self.permission_mode: str = "default"
         self.first_message: str | None = None
         self.project_alias: str | None = None
-        self.model: str = "claude-opus-4-7"
-        self.backend: str = "claude"  # "claude" or "codex"
+        self.model: str = "gpt-5.5"
+        self.backend: str = "codex"  # "claude" or "codex"
         self.custom_title: str | None = None
         # Progress tracking for /status command
         self.working_since: datetime | None = None  # set when agent starts processing
@@ -211,19 +211,24 @@ class FeishuBotServer:
         bot_config = config.get("feishu_bot", {})
         self.default_model = bot_config.get(
             "model",
-            config.get("defaults", {}).get("model", "claude-opus-4-7"),
+            config.get("defaults", {}).get("model", "gpt-5.5"),
         )
         self.default_effort: str | None = bot_config.get(
             "effort",
             config.get("defaults", {}).get("effort"),
         )
-        self.default_backend: str = bot_config.get("default_backend", "claude")
+        self.default_backend: str = bot_config.get(
+            "default_backend",
+            config.get("defaults", {}).get("backend", "codex"),
+        )
         # Default permission mode applied to new sessions when the user
         # hasn't called /mode in the chat.  Accepts either the friendly
         # alias (plan/ask/auto/edits/bypass) or the raw SDK value
         # (default/acceptEdits/plan/auto/bypassPermissions/dontAsk).
         # See PermissionMode in claude_agent_sdk/types.py.
-        _raw_mode = bot_config.get("mode", config.get("defaults", {}).get("mode", "auto"))
+        _raw_mode = bot_config.get(
+            "mode", config.get("defaults", {}).get("mode", "auto")
+        )
         self.default_mode: str = MODE_ALIASES.get(_raw_mode, _raw_mode)
         # Projects: alias → absolute path, with per-project settings
         self.projects: Dict[str, Path] = {}
@@ -328,7 +333,9 @@ class FeishuBotServer:
         print(f"Starting Feishu bot (WebSocket long connection)...")
         print(f"  App ID: {self.app_id[:8]}...")
         print(f"  Default model: {self.default_model}")
-        print(f"  Default mode:  {MODE_DISPLAY.get(self.default_mode, self.default_mode)} ({self.default_mode})")
+        print(
+            f"  Default mode:  {MODE_DISPLAY.get(self.default_mode, self.default_mode)} ({self.default_mode})"
+        )
         if self.projects:
             print(f"  Projects:")
             for alias, path in self.projects.items():
@@ -964,16 +971,16 @@ class FeishuBotServer:
             loop.close()
 
     async def _execute_with_timeout(self, text: str, chat_id: str, message_id: str):
-        """Wrapper that adds a 30-minute timeout to _execute_and_reply."""
+        """Wrapper that adds a 1-hour timeout to _execute_and_reply."""
         try:
             await asyncio.wait_for(
                 self._execute_and_reply(text, chat_id, message_id),
-                timeout=1800,  # 30 minutes
+                timeout=3600,  # 1 hour
             )
         except asyncio.TimeoutError:
             self._send_message(
                 chat_id,
-                "Response timed out after 30 minutes.\n"
+                "Response timed out after 1 hour.\n"
                 "The session is still active — try sending a shorter request.",
             )
 
@@ -1026,6 +1033,10 @@ class FeishuBotServer:
             not project_alias or project_alias not in self._project_models
         ):
             model = BACKEND_DEFAULT_MODELS.get(backend, model)
+
+        model = self._resolve_model_for_backend(backend, model)
+        if chat_id in self._chat_models:
+            self._chat_models[chat_id] = model
 
         # Create new session
         restriction_tag = " [RESTRICTED]" if restricted else ""
@@ -1198,6 +1209,29 @@ class FeishuBotServer:
                 f"Error: {e}\n\nSession has been reset. Please try again.",
             )
 
+    def _resolve_schedule_backend(
+        self, schedule, chat_id: str, project_dir: Path
+    ) -> str:
+        """Pick the agent backend for a /run-triggered schedule.
+
+        Priority (highest first):
+          1. schedule.task.backend  — explicit per-schedule override
+          2. _chat_backends[chat_id] — user's explicit /backend override
+          3. _project_backends[alias] — project-level default
+          4. self.default_backend  — global default
+
+        Do not inherit an active session backend here. Scheduler runs should
+        remain GPT/Codex by default even if an old chat session used Claude.
+        """
+        if schedule.task.backend:
+            return schedule.task.backend
+        if chat_id in self._chat_backends:
+            return self._chat_backends[chat_id]
+        alias = self._get_project_alias(project_dir)
+        if alias and alias in self._project_backends:
+            return self._project_backends[alias]
+        return self.default_backend
+
     def _trigger_schedule(self, schedule_name: str, chat_id: str, message_id: str):
         """Trigger a predefined schedule by name."""
         if schedule_name not in self.schedules:
@@ -1221,13 +1255,13 @@ class FeishuBotServer:
             prompt = prompt.replace("{{today}}", today_str)
             prompt = prompt.replace("{{now}}", datetime.now().isoformat())
 
-            backend = schedule.task.backend or self.default_backend
+            project_dir = Path(schedule.task.project_dir).resolve()
+            backend = self._resolve_schedule_backend(schedule, chat_id, project_dir)
             model = _resolve_schedule_model(
                 backend=backend,
                 schedule_model=schedule.task.model,
                 default_model=self.default_model,
             )
-            project_dir = Path(schedule.task.project_dir).resolve()
             default_timeout = self.config.get("defaults", {}).get("timeout_minutes", 30)
             timeout = schedule.timeout_minutes or default_timeout
             max_turns = schedule.task.max_turns or 5
@@ -1237,12 +1271,12 @@ class FeishuBotServer:
                     self._execute_schedule_and_reply(
                         prompt,
                         project_dir,
-                        backend,
                         model,
                         chat_id,
                         schedule_name,
                         timeout,
                         max_turns,
+                        backend,
                     ),
                     self._loop,
                 )
@@ -1252,31 +1286,25 @@ class FeishuBotServer:
                         self._execute_schedule_and_reply(
                             prompt,
                             project_dir,
-                            backend,
                             model,
                             chat_id,
                             schedule_name,
                             timeout,
                             max_turns,
+                            backend,
                         )
                     ),
                     daemon=True,
                 )
                 thread.start()
         elif schedule.task.task_type == "standard" and schedule.task.name:
-            backend = schedule.task.backend or self.default_backend
-            if backend != "claude":
-                self._send_message(
-                    chat_id,
-                    f"[{schedule_name}] Standard schedules currently support backend='claude' only.",
-                )
-                return
+            project_dir = Path(schedule.task.project_dir).resolve()
+            backend = self._resolve_schedule_backend(schedule, chat_id, project_dir)
             model = _resolve_schedule_model(
                 backend=backend,
                 schedule_model=schedule.task.model,
                 default_model=self.default_model,
             )
-            project_dir = Path(schedule.task.project_dir).resolve()
             max_iters = schedule.task.max_iterations or 10
             default_timeout = self.config.get("defaults", {}).get("timeout_minutes", 30)
             timeout = schedule.timeout_minutes or default_timeout
@@ -1302,6 +1330,7 @@ class FeishuBotServer:
                         chat_id,
                         schedule_name,
                         timeout,
+                        backend,
                     )
                 ),
                 daemon=True,
@@ -1317,12 +1346,12 @@ class FeishuBotServer:
         self,
         prompt: str,
         project_dir: Path,
-        backend: str,
         model: str,
         chat_id: str,
         schedule_name: str,
         timeout_minutes: int = 15,
         max_turns: int = 5,
+        backend: str = "codex",
     ):
         """Execute a schedule's inline task (one-shot, no session persistence)."""
         from .inline_executor import run_inline_task
@@ -1333,9 +1362,9 @@ class FeishuBotServer:
                 run_inline_task(
                     prompt=prompt,
                     project_dir=project_dir,
-                    backend=backend,
                     model=model,
                     max_turns=max_turns,
+                    backend=backend,
                 ),
                 timeout=timeout_minutes * 60,
             )
@@ -1375,6 +1404,7 @@ class FeishuBotServer:
         chat_id: str,
         schedule_name: str,
         timeout_minutes: int = 120,
+        backend: str = "codex",
     ):
         """Execute a standard long-runner task and send result to chat."""
         from long_run_executor import run_long_task
@@ -1391,6 +1421,7 @@ class FeishuBotServer:
                     model=model,
                     max_iterations=max_iterations,
                     resume=False,
+                    backend=backend,
                 ),
                 timeout=timeout_minutes * 60,
             )
@@ -2040,6 +2071,15 @@ class FeishuBotServer:
                 return alias
         return None
 
+    def _resolve_model_for_backend(self, backend: str, model: str | None) -> str:
+        """Return a model id that is valid for the selected backend."""
+        default = BACKEND_DEFAULT_MODELS.get(backend, self.default_model)
+        if not model:
+            return default
+        if backend == "codex" and model not in CODEX_MODEL_IDS:
+            return default
+        return model
+
     def _load_session_history(self) -> dict:
         """Load session history from disk."""
         if SESSION_HISTORY_FILE.exists():
@@ -2071,6 +2111,9 @@ class FeishuBotServer:
                 entry = existing
                 break
 
+        model = self._resolve_model_for_backend(session.backend, session.model)
+        session.model = model
+
         if entry is None:
             entry = {
                 "session_id": session.session_id,
@@ -2083,7 +2126,7 @@ class FeishuBotServer:
                 "project_dir": str(session.project_dir),
                 "created_at": session.created_at.isoformat(),
                 "last_active": session.last_active.isoformat(),
-                "model": session.model,
+                "model": model,
                 "backend": session.backend,
                 "source": "bot",
             }
@@ -2092,7 +2135,7 @@ class FeishuBotServer:
             # Update existing entry
             entry["last_active"] = session.last_active.isoformat()
             entry["permission_mode"] = session.permission_mode
-            entry["model"] = session.model
+            entry["model"] = model
             entry["backend"] = session.backend
             if session.custom_title:
                 entry["summary"] = session.custom_title
@@ -2432,11 +2475,8 @@ class FeishuBotServer:
             chat_id, self.default_backend
         )
         self._chat_backends[chat_id] = entry_backend
-        # Use entry's model if present and looks valid for the backend; else
-        # fall back to the backend's default
-        model = entry.get("model") or BACKEND_DEFAULT_MODELS.get(
-            entry_backend, self.default_model
-        )
+        model = self._resolve_model_for_backend(entry_backend, entry.get("model"))
+        entry["model"] = model
         self._chat_models[chat_id] = model
 
         # Resume asynchronously
@@ -2468,9 +2508,8 @@ class FeishuBotServer:
             )
             self._chat_backends[chat_id] = backend
 
-            model = entry.get("model") or BACKEND_DEFAULT_MODELS.get(
-                backend, self.default_model
-            )
+            model = self._resolve_model_for_backend(backend, entry.get("model"))
+            entry["model"] = model
             mode = entry.get("permission_mode", "acceptEdits")
             print(
                 f"  [Session] Resuming session {session_id[:8]}... for chat {chat_id[:8]}... (backend: {backend}, project: {project_dir}, model: {model}, mode: {mode})"

@@ -9,7 +9,6 @@ Uses an allowlist approach - only explicitly permitted commands can run.
 import os
 import shlex
 
-
 # Base allowed commands for development tasks
 # These are always available for all tasks
 BASE_ALLOWED_COMMANDS = {
@@ -101,7 +100,11 @@ BASE_ALLOWED_COMMANDS = {
     "az",
     "ssh",
     "pip",
-    "pip3"
+    "pip3",
+    # macOS scripting bridge — used by Teams boss-message handler to
+    # drop TODO items into Apple Notes via AppleScript heredocs.
+    "osascript",
+    "mvn",
 }
 
 # Task-specific allowed commands (set at runtime)
@@ -201,9 +204,7 @@ def extract_commands(command_string: str) -> list[str]:
         inner = (m.group(1) if m.group(1) is not None else m.group(2)).strip()
         if inner:
             subshell_inners.append(inner)
-        command_string = (
-            command_string[: m.start()] + " " + command_string[m.end() :]
-        )
+        command_string = command_string[: m.start()] + " " + command_string[m.end() :]
 
     for inner in subshell_inners:
         commands.extend(extract_commands(inner))
@@ -529,7 +530,10 @@ def validate_path_restriction(
         if resolved.startswith(project_dir_normalized):
             return True, ""
 
-        return False, f"Path '{path_str}' (resolves to '{resolved}') is outside project directory '{project_dir}'"
+        return (
+            False,
+            f"Path '{path_str}' (resolves to '{resolved}') is outside project directory '{project_dir}'",
+        )
 
     # Parse tokens and check path-like arguments
     expect_command = True
@@ -539,7 +543,12 @@ def validate_path_restriction(
         if skip_next:
             skip_next = False
             # This token is a redirect target — validate it as a path
-            if token.startswith("/") or token.startswith("./") or token.startswith("../") or ".." in token:
+            if (
+                token.startswith("/")
+                or token.startswith("./")
+                or token.startswith("../")
+                or ".." in token
+            ):
                 ok, reason = _is_path_allowed(token, is_command_position=False)
                 if not ok:
                     return False, reason
@@ -558,8 +567,13 @@ def validate_path_restriction(
         # Handle combined redirect+path like >/path or >>/path
         for redirect_op in (">>", ">", "2>>", "2>", "&>>", "&>"):
             if token.startswith(redirect_op) and len(token) > len(redirect_op):
-                path_part = token[len(redirect_op):]
-                if path_part.startswith("/") or path_part.startswith("./") or path_part.startswith("../") or ".." in path_part:
+                path_part = token[len(redirect_op) :]
+                if (
+                    path_part.startswith("/")
+                    or path_part.startswith("./")
+                    or path_part.startswith("../")
+                    or ".." in path_part
+                ):
                     ok, reason = _is_path_allowed(path_part, is_command_position=False)
                     if not ok:
                         return False, reason
@@ -654,11 +668,12 @@ def make_bash_security_hook(restricted_project_dir: str | None = None):
         # Step 2: Path restriction check (only when restricted)
         if restricted_project_dir:
             for segment in segments:
-                is_ok, reason = validate_path_restriction(segment, restricted_project_dir)
+                is_ok, reason = validate_path_restriction(
+                    segment, restricted_project_dir
+                )
                 if not is_ok:
                     return {"decision": "block", "reason": reason}
 
         return {}
 
     return _hook
-

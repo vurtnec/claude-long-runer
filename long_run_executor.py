@@ -3,7 +3,7 @@
 Long-Running Task Executor
 ===========================
 
-Generic framework for executing long-running Claude Agent SDK tasks.
+Generic framework for executing long-running agent tasks.
 Based on the official autonomous-coding project architecture.
 
 Usage:
@@ -25,16 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeSDKClient,
-    TextBlock,
-    ToolResultBlock,
-    ToolUseBlock,
-    UserMessage,
-)
-
-from client import create_client
+from agent_protocol import AgentClient, EventType, create_agent_client
 from security import set_task_allowed_commands
 from success_checker import SuccessChecker
 from state_manager import StateManager
@@ -86,7 +77,7 @@ def load_processor(processor_path: Path):
 
 
 async def run_agent_session(
-    client: ClaudeSDKClient,
+    client: AgentClient,
     message: str,
     state: StateManager,
 ) -> tuple[str, str]:
@@ -94,7 +85,7 @@ async def run_agent_session(
     Run a single agent session.
 
     Args:
-        client: Claude SDK client
+        client: Unified agent client
         message: The prompt to send
         state: State manager for tracking progress
 
@@ -103,51 +94,57 @@ async def run_agent_session(
         - "continue" if agent should continue working
         - "error" if an error occurred
     """
-    print("Sending prompt to Claude Agent SDK...\n")
+    print(f"Sending prompt to {client.backend_name} agent...\n")
 
     try:
-        # Send the query
-        await client.query(message)
+        await client.send_message(message)
 
         # Collect response text and show tool use
         response_text = ""
-        async for msg in client.receive_response():
-            # Handle AssistantMessage (text and tool use)
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        response_text += block.text
-                        print(block.text, end="", flush=True)
-                    elif isinstance(block, ToolUseBlock):
-                        print(f"\n[Tool: {block.name}]", flush=True)
-                        input_str = str(block.input)
-                        if len(input_str) > 200:
-                            print(f"   Input: {input_str[:200]}...", flush=True)
-                        else:
-                            print(f"   Input: {input_str}", flush=True)
+        run_error = ""
+        async for event in client.receive_events():
+            if event.type == EventType.TEXT:
+                text = event.text or ""
+                response_text += text
+                print(text, end="", flush=True)
 
-            # Handle UserMessage (tool results)
-            elif isinstance(msg, UserMessage):
-                for block in msg.content:
-                    if isinstance(block, ToolResultBlock):
-                        result_content = block.content if block.content is not None else ""
-                        is_error = block.is_error or False
+            elif event.type == EventType.TOOL_USE:
+                print(f"\n[Tool: {event.tool_name}]", flush=True)
+                input_str = str(event.tool_input)
+                if len(input_str) > 200:
+                    print(f"   Input: {input_str[:200]}...", flush=True)
+                else:
+                    print(f"   Input: {input_str}", flush=True)
 
-                        # Check if command was blocked by security hook
-                        if "blocked" in str(result_content).lower():
-                            print(f"   [BLOCKED] {result_content}", flush=True)
-                        elif is_error:
-                            # Show errors (truncated)
-                            error_str = str(result_content)[:500]
-                            print(f"   [Error] {error_str}", flush=True)
-                        else:
-                            # Tool succeeded - just show brief confirmation
-                            print("   [Done]", flush=True)
+            elif event.type == EventType.TOOL_RESULT:
+                result_content = event.result_content or ""
+                if "blocked" in result_content.lower():
+                    print(f"   [BLOCKED] {result_content}", flush=True)
+                elif event.is_error:
+                    error_str = result_content[:500]
+                    print(f"   [Error] {error_str}", flush=True)
+                else:
+                    print("   [Done]", flush=True)
+
+            elif event.type == EventType.ERROR:
+                run_error = event.metadata.get("error", "Unknown error")
+                print(f"\n  [Error] {run_error}", flush=True)
+
+            elif event.type == EventType.RESULT:
+                if event.metadata.get("is_error"):
+                    run_error = (
+                        event.metadata.get("error")
+                        or response_text
+                        or "Agent returned an error"
+                    )
 
         print("\n" + "-" * 70 + "\n")
 
         # Store response in state
         state.set_last_response(response_text)
+
+        if run_error:
+            return "error", response_text or run_error
 
         return "continue", response_text
 
@@ -160,10 +157,11 @@ async def run_long_task(
     task_name: str,
     task_params: Dict[str, Any],
     project_dir: Path,
-    model: str,
+    model: str | None,
     max_iterations: int = 5,
     resume: bool = False,
     effort: str | None = None,
+    backend: str = "codex",
 ) -> bool:
     """
     Execute a long-running task with iteration loop.
@@ -172,7 +170,7 @@ async def run_long_task(
         task_name: Name of the task (directory name in tasks/)
         task_params: Parameters to pass to prompt templates
         project_dir: Working directory for the task
-        model: Claude model to use
+        model: Agent model to use
         max_iterations: Maximum number of iterations
         resume: Whether to resume from existing state
 
@@ -183,7 +181,8 @@ async def run_long_task(
     print(f"  LONG-RUNNING TASK EXECUTOR: {task_name}")
     print("=" * 70)
     print(f"\nProject directory: {project_dir}")
-    print(f"Model: {model}")
+    print(f"Backend: {backend}")
+    print(f"Model: {model or '(backend default)'}")
     print(f"Max iterations: {max_iterations}")
     print(f"Resume mode: {resume}")
     print()
@@ -281,9 +280,6 @@ async def run_long_task(
         print("=" * 70)
         print()
 
-        # Create client (fresh context for each iteration)
-        client = create_client(project_dir, model, task_config.browser_tool, task_config.system_prompt, effort=effort)
-
         # Choose prompt based on whether this is the first run
         if is_first_run:
             try:
@@ -314,9 +310,21 @@ async def run_long_task(
 
         print()
 
-        # Run session with async context manager
-        async with client:
+        # Create client (fresh context for each iteration)
+        client = create_agent_client(
+            backend,
+            project_dir=str(project_dir),
+            model=model,
+            browser_tool=task_config.browser_tool,
+            system_prompt=task_config.system_prompt,
+            effort=effort,
+        )
+
+        try:
+            await client.connect()
             status, response = await run_agent_session(client, prompt, state)
+        finally:
+            await client.disconnect()
 
         # Run state processor if configured
         if task_config.state_processor:
@@ -391,7 +399,7 @@ async def run_long_task(
 def main() -> None:
     """Main entry point for the executor."""
     parser = argparse.ArgumentParser(
-        description="Execute long-running Claude Agent SDK tasks",
+        description="Execute long-running agent tasks",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -441,8 +449,15 @@ Examples:
     parser.add_argument(
         "--model",
         type=str,
-        default="claude-sonnet-4-6",
-        help="Claude model to use (default: claude-sonnet-4-6)",
+        default="gpt-5.5",
+        help="Agent model to use (default: gpt-5.5)",
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        choices=["codex", "claude"],
+        default="codex",
+        help="Agent backend to use (default: codex)",
     )
     parser.add_argument(
         "--effort",
@@ -493,6 +508,7 @@ Examples:
                 max_iterations=args.max_iterations,
                 resume=args.resume,
                 effort=args.effort,
+                backend=args.backend,
             )
         )
 

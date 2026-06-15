@@ -48,9 +48,14 @@ class TriggerConfig:
     chat_topic_contains: Optional[str] = None
     chat_id: Optional[str] = None
     sender_displayname: Optional[str] = None
+    allowed_chat_ids: List[str] = field(default_factory=list)
+    allowed_chat_topic_contains: List[str] = field(default_factory=list)
+    allowed_sender_displaynames: List[str] = field(default_factory=list)
+    allowed_sender_ids: List[str] = field(default_factory=list)
     content_pattern: Optional[str] = None
     match_html: bool = True
     exclude_self: bool = True
+    scan_chat_limit: int = 15
     # Minimum length of the plain-text (HTML-stripped) message body. 0 = no
     # filter. Use this to skip "OK"/"收到"-style short acknowledgements that
     # don't deserve an AI analysis.
@@ -65,10 +70,13 @@ class TaskRef:
     task_type: str = "standard"  # "standard" | "inline"
     params: Dict[str, Any] = field(default_factory=dict)
     project_dir: str = "."
-    backend: Optional[str] = None
     model: Optional[str] = None
     effort: Optional[str] = None
     max_iterations: Optional[int] = None
+    # "claude" | "codex" — picks the agent backend used to run this task.
+    # None means "use the caller's default" (bot session backend, or "codex"
+    # in the daemon).
+    backend: Optional[str] = None
     # Inline task fields
     prompt: Optional[str] = None
     max_turns: Optional[int] = None

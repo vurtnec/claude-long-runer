@@ -286,7 +286,7 @@ class SchedulerDaemon:
             schedule.task.backend
             or self.defaults.get("backend")
             or self.defaults.get("default_backend")
-            or "claude"
+            or "codex"
         )
         model = _resolve_model_for_backend(
             backend=backend,
@@ -312,7 +312,11 @@ class SchedulerDaemon:
                     # Inline task: direct prompt execution
                     result = await asyncio.wait_for(
                         self._execute_inline(
-                            schedule, backend, model, template_vars, effort=effort
+                            schedule,
+                            model,
+                            template_vars,
+                            effort=effort,
+                            backend=backend,
                         ),
                         timeout=timeout_minutes * 60,
                     )
@@ -325,7 +329,11 @@ class SchedulerDaemon:
                     # Standard task: use existing run_long_task()
                     result = await asyncio.wait_for(
                         self._execute_standard(
-                            schedule, backend, model, resolved_params, effort=effort
+                            schedule,
+                            model,
+                            resolved_params,
+                            effort=effort,
+                            backend=backend,
                         ),
                         timeout=timeout_minutes * 60,
                     )
@@ -403,14 +411,12 @@ class SchedulerDaemon:
     async def _execute_standard(
         self,
         schedule: ScheduleDefinition,
-        backend: str,
-        model: str,
+        model: str | None,
         resolved_params: Dict[str, Any],
         effort: str | None = None,
+        backend: str = "codex",
     ) -> Dict[str, Any]:
         """Execute a standard task via run_long_task()."""
-        if backend != "claude":
-            raise ValueError("standard scheduled tasks currently support backend='claude' only")
         max_iters = schedule.task.max_iterations or self.defaults.get(
             "max_iterations", 10
         )
@@ -420,7 +426,8 @@ class SchedulerDaemon:
         print(f"  Executing standard task: {schedule.task.name}")
         print(f"  Project dir: {project_dir}")
         print(
-            f"  Model: {model}, Max iterations: {max_iters}, Effort: {effort or 'default'}"
+            f"  Backend: {backend}, Model: {model or '(backend default)'}, "
+            f"Max iterations: {max_iters}, Effort: {effort or 'default'}"
         )
 
         success = await run_long_task(
@@ -431,6 +438,7 @@ class SchedulerDaemon:
             max_iterations=max_iters,
             resume=False,
             effort=effort,
+            backend=backend,
         )
 
         # Read state file for last_response
@@ -456,10 +464,10 @@ class SchedulerDaemon:
     async def _execute_inline(
         self,
         schedule: ScheduleDefinition,
-        backend: str,
-        model: str,
+        model: str | None,
         template_vars: Dict[str, Any],
         effort: str | None = None,
+        backend: str = "codex",
     ) -> Dict[str, Any]:
         """Execute an inline prompt task."""
         prompt = schedule.task.prompt or ""
@@ -475,10 +483,10 @@ class SchedulerDaemon:
         return await run_inline_task(
             prompt=prompt,
             project_dir=project_dir,
-            backend=backend,
             model=model,
             max_turns=max_turns,
             effort=effort,
+            backend=backend,
         )
 
     async def _send_notifications(self, notifications, context: Dict[str, Any]):

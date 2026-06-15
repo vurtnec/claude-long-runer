@@ -26,6 +26,7 @@ Upgrade strategy:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -82,6 +83,8 @@ _EFFORT_MAP = {
     "minimal": "minimal",
     "none": "none",
 }
+
+DEFAULT_CODEX_MODEL = "gpt-5.5"
 
 
 def _normalize_effort(value: str | None) -> str | None:
@@ -196,9 +199,22 @@ async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
     config = AppServerConfig(codex_bin=codex_bin) if codex_bin else None
     codex = AsyncCodex(config=config) if config else AsyncCodex()
 
+    # Codex's thread_list defaults to "interactive sources" only — which
+    # excludes threads tagged `unknown`.  Sessions started via the
+    # app-server SDK (i.e. our Feishu bot) come back as `unknown`, so the
+    # default filter silently hides them.  Pass an explicit list that
+    # includes the kinds a user would want to resume from the bot.
+    source_kinds = ["cli", "vscode", "exec", "appServer", "unknown"]
+
     try:
         await codex.__aenter__()
-        result = await codex.thread_list(cwd=project_dir, limit=limit)
+        result = await codex.thread_list(
+            cwd=project_dir,
+            limit=limit,
+            source_kinds=source_kinds,
+            sort_key="updated_at",
+            sort_direction="desc",
+        )
     except Exception as e:
         logger.warning("Codex thread_list failed for %s: %s", project_dir, e)
         try:
@@ -206,6 +222,41 @@ async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
         except Exception:
             pass
         return []
+
+    def _path_str(value, fallback: str) -> str:
+        # Codex SDK returns `cwd` as an `AbsolutePathBuf` RootModel; unwrap
+        # to a plain str so callers can pass it to `pathlib.Path(...)`.
+        if value is None:
+            return fallback
+        if isinstance(value, str):
+            return value
+        root = getattr(value, "root", None)
+        if isinstance(root, str):
+            return root
+        return str(value)
+
+    def _thread_model(thread: Any) -> str:
+        model = getattr(thread, "model", None) or getattr(thread, "model_id", None)
+        if isinstance(model, str) and model:
+            return model
+
+        path = _path_str(getattr(thread, "path", None), "")
+        if not path:
+            return ""
+
+        last_model = ""
+        try:
+            with open(path) as f:
+                for line in f:
+                    if '"turn_context"' not in line:
+                        continue
+                    obj = json.loads(line)
+                    model = obj.get("payload", {}).get("model")
+                    if isinstance(model, str) and model:
+                        last_model = model
+        except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+            return ""
+        return last_model
 
     threads: list[dict] = []
     for t in getattr(result, "data", []) or []:
@@ -218,10 +269,12 @@ async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
                 "summary": preview[:50],
                 "permission_mode": "default",  # Codex has no Claude-style modes
                 "project_alias": None,         # filled in by caller
-                "project_dir": getattr(t, "cwd", project_dir),
+                "project_dir": _path_str(getattr(t, "cwd", None), project_dir),
                 "created_at": created,
                 "last_active": updated,
-                "model": getattr(t, "model_provider", "") or "",
+                # ThreadList exposes model_provider (e.g. "openai"), not the
+                # model id. Do not persist provider names as resumable models.
+                "model": _thread_model(t),
                 "backend": "codex",
                 "source": "codex",
             })
@@ -315,7 +368,7 @@ class CodexAgentClient:
     def __init__(
         self,
         project_dir: str | None = None,
-        model: str = "o3",
+        model: str = DEFAULT_CODEX_MODEL,
         approval_policy: str | None = None,
         resume_thread_id: str | None = None,
         effort: str | None = None,
@@ -472,14 +525,16 @@ class CodexAgentClient:
                     continue
         except Exception as e:
             # Stream-level error — yield as ERROR event so the caller can
-            # decide how to handle it (e.g. show message to user)
+            # decide how to handle it (e.g. show message to user). Skip the
+            # trailing RESULT to keep the event contract symmetric with the
+            # Claude backend, which only emits RESULT on a real ResultMessage.
             logger.error("Codex stream error: %s", e)
             yield AgentEvent(
                 type=EventType.ERROR,
                 metadata={"error": str(e)},
             )
+            return
 
-        # Always emit a RESULT at the end so the caller knows we're done
         yield AgentEvent(
             type=EventType.RESULT,
             metadata={"session_id": self._session_id},

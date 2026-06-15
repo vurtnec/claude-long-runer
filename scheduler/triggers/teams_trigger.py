@@ -8,6 +8,7 @@ matches one or more of the configured filters:
 - ``chat_topic_contains``  — only consider chats whose topic contains this string
 - ``chat_id``              — explicit chat to monitor (skips topic resolution)
 - ``sender_displayname``   — only fire on messages from this exact display name
+- ``allowed_*`` lists      — optional OR allowlist for trusted chats/senders
 - ``content_pattern``      — regex that must match the message text/HTML
 - ``capture_groups``       — when ``content_pattern`` has named groups, lift them
                              into trigger_data (e.g. ``pr_id`` from the PR URL)
@@ -35,6 +36,19 @@ from .base import BaseTrigger, TriggerResult
 _FETCH_POOL = ThreadPoolExecutor(max_workers=10, thread_name_prefix="teams-fetch")
 
 
+def _normalise_list(raw: Any) -> List[str]:
+    """Accept YAML scalar/list shapes and return stripped string values."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        values = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        values = list(raw)
+    else:
+        values = [raw]
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
 class TeamsMessageTrigger(BaseTrigger):
     """Fires on incoming Teams messages matching configured filters."""
 
@@ -43,6 +57,28 @@ class TeamsMessageTrigger(BaseTrigger):
         self.chat_topic_substring: Optional[str] = config.get("chat_topic_contains")
         self.explicit_chat_id: Optional[str] = config.get("chat_id")
         self.sender_displayname: Optional[str] = config.get("sender_displayname")
+        self.allowed_chat_ids = _normalise_list(config.get("allowed_chat_ids"))
+        self.allowed_chat_id_set = {v.lower() for v in self.allowed_chat_ids}
+        self.allowed_chat_topic_substrings = [
+            v.lower()
+            for v in _normalise_list(config.get("allowed_chat_topic_contains"))
+        ]
+        self.allowed_sender_name_set = {
+            v.lower()
+            for v in _normalise_list(config.get("allowed_sender_displaynames"))
+        }
+        self.allowed_sender_id_set = {
+            v.lower() for v in _normalise_list(config.get("allowed_sender_ids"))
+        }
+        self._has_sender_allowlist = bool(
+            self.allowed_sender_name_set or self.allowed_sender_id_set
+        )
+        self._has_allowlist = bool(
+            self.allowed_chat_ids
+            or self.allowed_chat_topic_substrings
+            or self.allowed_sender_name_set
+            or self.allowed_sender_id_set
+        )
 
         pattern = config.get("content_pattern")
         self.content_re: Optional[re.Pattern] = (
@@ -62,6 +98,7 @@ class TeamsMessageTrigger(BaseTrigger):
         # Skip messages whose stripped plain-text body is shorter than this.
         # Avoids spinning up Claude for "OK" / "收到" acknowledgements.
         self.min_message_length: int = int(config.get("min_message_length", 0))
+        self.scan_chat_limit: int = max(1, int(config.get("scan_chat_limit") or 15))
 
         self._client = client or get_teams_client()
         self._resolved_chat_id: Optional[str] = self.explicit_chat_id
@@ -119,6 +156,49 @@ class TeamsMessageTrigger(BaseTrigger):
     # Matching
     # ------------------------------------------------------------------
 
+    def _chat_meta_matches_allowlist(self, chat: Dict[str, Any]) -> bool:
+        """
+        Return True if a chat should be fetched before message-level checks.
+
+        Sender allowlists cannot be evaluated from chat metadata, so when any
+        sender allowlist is configured we still need to inspect recent chats.
+        """
+        if not self._has_allowlist:
+            return True
+
+        cid = str(chat.get("id") or "").lower()
+        topic = str(chat.get("topic") or "").lower()
+
+        if cid and cid in self.allowed_chat_id_set:
+            return True
+        if topic and any(
+            needle in topic for needle in self.allowed_chat_topic_substrings
+        ):
+            return True
+        return self._has_sender_allowlist
+
+    def _message_matches_allowlist(self, msg: TeamsMessage) -> bool:
+        """Apply the optional OR allowlist across chat id/topic and sender."""
+        if not self._has_allowlist:
+            return True
+
+        chat_id = (msg.chat_id or "").lower()
+        chat_topic = (msg.chat_topic or "").lower()
+        sender_name = (msg.sender_name or "").lower()
+        sender_id = (msg.sender_id or "").lower()
+
+        if chat_id and chat_id in self.allowed_chat_id_set:
+            return True
+        if chat_topic and any(
+            needle in chat_topic for needle in self.allowed_chat_topic_substrings
+        ):
+            return True
+        if sender_name and sender_name in self.allowed_sender_name_set:
+            return True
+        if sender_id and sender_id in self.allowed_sender_id_set:
+            return True
+        return False
+
     def _matches(self, msg: TeamsMessage) -> Optional[Dict[str, Any]]:
         """Return regex match groups (or {}) if msg matches; None otherwise."""
         if self.exclude_self:
@@ -135,6 +215,9 @@ class TeamsMessageTrigger(BaseTrigger):
                 return None
 
         if self.sender_displayname and msg.sender_name != self.sender_displayname:
+            return None
+
+        if not self._message_matches_allowlist(msg):
             return None
 
         # Length filter on plain-text body — measured AFTER HTML strip so that
@@ -176,21 +259,43 @@ class TeamsMessageTrigger(BaseTrigger):
         # any chat" rule. Watermarks are tracked per-(schedule, chat) so
         # different schedules never disturb each other.
         out: List[TeamsMessage] = []
-        try:
-            # 15 most-recent chats covers active conversations without
-            # scanning every dormant chat (steady-state poll latency).
-            chats = self._client.list_chats(top=15)
-        except Exception as e:
-            print(f"  [teams_trigger:{self.owner_name}] list_chats failed: {e}")
-            return []
+        target_ids: List[str] = []
+        seen_target_ids: set[str] = set()
+
+        def _add_target(cid: str) -> None:
+            key = cid.lower()
+            if cid and key not in seen_target_ids:
+                target_ids.append(cid)
+                seen_target_ids.add(key)
+
+        for cid in self.allowed_chat_ids:
+            _add_target(cid)
+
+        needs_recent_scan = (
+            not self._has_allowlist
+            or self._has_sender_allowlist
+            or bool(self.allowed_chat_topic_substrings)
+            or not self.allowed_chat_ids
+        )
+        if needs_recent_scan:
+            try:
+                # The recent-chat cap keeps steady-state poll latency bounded
+                # while still catching newly active allowed senders/chats.
+                chats = self._client.list_chats(top=self.scan_chat_limit)
+            except Exception as e:
+                print(f"  [teams_trigger:{self.owner_name}] list_chats failed: {e}")
+                return []
+
+            for chat in chats:
+                if self._chat_meta_matches_allowlist(chat):
+                    _add_target(chat["id"])
 
         # Split into "first-sight" chats (need watermark seeding) and
         # "watched" chats (need a real messages fetch). We seed serially —
         # it's a one-shot cost when a chat first becomes visible — and
         # parallelise the steady-state message fetches.
         targets: List[str] = []
-        for chat in chats:
-            cid = chat["id"]
+        for cid in target_ids:
             since = self._client.get_watermark(self.owner_name, cid)
             if since is None:
                 self._client.initialize_watermark_to_now(self.owner_name, cid)
