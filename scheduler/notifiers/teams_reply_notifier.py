@@ -2,11 +2,17 @@
 Teams Reply Notification
 ========================
 
-Reply back into the same Teams chat that triggered the schedule, but only
-when the original sender is on a configured whitelist. Designed to pair
-with a ``teams_message`` trigger — relies on ``chat_id`` / ``sender_name``
-/ ``sender_id`` being present in the notification context (which
-``TeamsMessageTrigger`` populates automatically).
+Reply into Teams after a schedule fires. By default this sends back into the
+same Teams chat that triggered the schedule. Set ``target_chat_id`` to route
+the message to a fixed Teams chat instead.
+
+By default it only sends when the original sender is on a configured
+whitelist. For schedules that already restrict the source chat tightly, set
+``allow_any_sender: true`` to send regardless of sender.
+
+Designed to pair with a ``teams_message`` trigger — relies on ``chat_id`` /
+``sender_name`` / ``sender_id`` being present in the notification context
+(which ``TeamsMessageTrigger`` populates automatically).
 
 Whitelist semantics:
 
@@ -23,6 +29,13 @@ Whitelist semantics:
   Feishu notifier in the same ``on_success`` block: every trigger
   produces the Feishu push, but only whitelisted senders also get the
   Teams reply.
+- ``allow_any_sender: true`` bypasses the sender whitelist. Use it only when
+  the trigger is already scoped to trusted ``allowed_chat_ids`` or
+  ``allowed_chat_topic_contains`` values.
+- ``target_chat_id`` sends to a fixed Teams chat instead of the chat that
+  triggered the schedule. This is useful when trusted senders can trigger the
+  schedule from multiple chats, but results should always land in one review
+  group.
 
 YAML usage::
 
@@ -34,6 +47,11 @@ YAML usage::
           whitelist:
             - "Jane Doe"                       # displayName (case-insensitive)
             - "12345678-aaaa-bbbb-cccc-..."   # AAD user id also works
+          # Optional. Bypass sender whitelist when the trigger chat itself
+          # is trusted and tightly scoped.
+          # allow_any_sender: true
+          # Optional. Defaults to the triggering chat_id.
+          # target_chat_id: "19:...@thread.v2"
           # Optional. Defaults to "{{last_response}}" if omitted.
           body: |
             {{last_response}}
@@ -42,13 +60,16 @@ YAML usage::
           # title: "Auto-analysis"
           # Optional. "text" (default) or "html".
           # content_type: text
+          # Optional. Defaults to 3500; max supported here is 27000 to stay
+          # below Microsoft Teams' chat-message body limit.
+          # max_chars: 20000
 
 Setup (one-time after upgrading from the Chat.Read-only release)::
 
     python teams_probe.py
 
 This re-issues the OAuth token cache with the ``ChatMessage.Send`` scope.
-Without it the daemon will log an auth error on the first whitelisted send.
+Without it the daemon will log an auth error on the first Teams send.
 """
 
 from __future__ import annotations
@@ -68,42 +89,53 @@ from scheduler.teams_client import TeamsAuthError, get_teams_client  # noqa: E40
 from .base import BaseNotifier
 
 
-# Soft cap on outbound reply size. Teams' hard limit on chat-message body
-# is ~28KB, but pasting a 28KB wall of text into a chat is hostile. 3500
-# chars is roughly a screenful on desktop; long answers get truncated with
-# a clear marker so the recipient knows there's more in Feishu.
-_MAX_REPLY_CHARS = 3500
+# Soft default on outbound reply size. Teams' hard limit on chat-message body
+# is ~28KB, so callers can raise this per schedule when a full review belongs
+# in the chat. Keep a small safety margin below the hard limit.
+_DEFAULT_REPLY_CHARS = 3500
+_MAX_TEAMS_REPLY_CHARS = 27000
+_TRUNCATION_MARKER = "\n\n…(truncated)"
 
 
 class TeamsReplyNotifier(BaseNotifier):
-    """Send a Teams reply for whitelisted senders only; skip otherwise."""
+    """Send a Teams reply when the configured sender policy allows it."""
 
     async def send(self, settings: Dict[str, Any], context: Dict[str, Any]) -> bool:
-        whitelist = self._normalise_whitelist(settings.get("whitelist"))
-        if whitelist is None:
-            # Malformed (not a list) — already logged by _normalise_whitelist.
-            return False
-        if not whitelist:
-            print(
-                "  TeamsReply: whitelist is empty — skipping "
-                "(set 'whitelist:' in the schedule YAML to enable)"
-            )
-            return False
+        allow_any_sender = self._as_bool(settings.get("allow_any_sender", False))
+        whitelist: List[str] = []
+        if not allow_any_sender:
+            normalised = self._normalise_whitelist(settings.get("whitelist"))
+            if normalised is None:
+                # Malformed (not a list) — already logged by _normalise_whitelist.
+                return False
+            whitelist = normalised
+            if not whitelist:
+                print(
+                    "  TeamsReply: whitelist is empty — skipping "
+                    "(set 'whitelist:' or 'allow_any_sender: true' in the "
+                    "schedule YAML to enable)"
+                )
+                return False
 
         sender_name = str(context.get("sender_name") or "").strip()
         sender_id = str(context.get("sender_id") or "").strip()
-        chat_id = str(context.get("chat_id") or "").strip()
+        source_chat_id = str(context.get("chat_id") or "").strip()
+        target_chat_id = str(settings.get("target_chat_id") or "").strip()
+        chat_id = target_chat_id or source_chat_id
 
         if not chat_id:
-            # No chat_id means the trigger that fired wasn't teams_message
-            # (or the schema changed). Nothing useful we can do here.
+            # No source or fixed target chat id means the trigger that fired
+            # wasn't teams_message (or the schema changed) and the schedule did
+            # not provide an explicit destination.
             print(
-                "  TeamsReply: no chat_id in context — this notifier is only "
-                "meaningful for teams_message triggers; skipping"
+                "  TeamsReply: no chat_id in context and no target_chat_id "
+                "configured — skipping"
             )
             return False
 
-        if not self._is_whitelisted(sender_name, sender_id, whitelist):
+        if not allow_any_sender and not self._is_whitelisted(
+            sender_name, sender_id, whitelist
+        ):
             shown_id = (sender_id[:8] + "...") if sender_id else "no-id"
             print(
                 f"  TeamsReply: sender '{sender_name}' ({shown_id}) "
@@ -115,10 +147,14 @@ class TeamsReplyNotifier(BaseNotifier):
         if not text:
             print("  TeamsReply: rendered body is empty — skipping")
             return False
-        if len(text) > _MAX_REPLY_CHARS:
+        max_reply_chars = self._reply_char_limit(settings.get("max_chars"))
+        if len(text) > max_reply_chars:
             # Reserve room for the truncation marker; rstrip avoids the
             # marker landing right after a trailing space.
-            text = text[: _MAX_REPLY_CHARS - 16].rstrip() + "\n\n…(truncated)"
+            text = (
+                text[: max_reply_chars - len(_TRUNCATION_MARKER)].rstrip()
+                + _TRUNCATION_MARKER
+            )
 
         content_type = settings.get("content_type", "text")
         if content_type not in ("text", "html"):
@@ -150,7 +186,8 @@ class TeamsReplyNotifier(BaseNotifier):
 
         print(
             f"  TeamsReply: sent to chat {chat_id[:30]}... "
-            f"(sender '{sender_name}', {len(text)} chars)"
+            f"(sender '{sender_name}', {len(text)} chars, "
+            f"policy={'any-sender' if allow_any_sender else 'whitelist'})"
         )
         return True
 
@@ -186,6 +223,24 @@ class TeamsReplyNotifier(BaseNotifier):
         if sender_id:
             candidates.append(sender_id.lower())
         return any(c in whitelist_lower for c in candidates)
+
+    @staticmethod
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return bool(value)
+
+    @staticmethod
+    def _reply_char_limit(value: Any) -> int:
+        try:
+            limit = int(value)
+        except (TypeError, ValueError):
+            return _DEFAULT_REPLY_CHARS
+        if limit <= 0:
+            return _DEFAULT_REPLY_CHARS
+        return max(100, min(limit, _MAX_TEAMS_REPLY_CHARS))
 
     def _render_body(
         self, settings: Dict[str, Any], context: Dict[str, Any]
