@@ -80,6 +80,8 @@ class SchedulerDaemon:
 
         self.trigger_engine = TriggerEngine()
         self.schedules: List[ScheduleDefinition] = []
+        self._schedules_signature = None
+        self._trigger_fingerprints: Dict[str, str] = {}
         self._running = False
         self._active_tasks: Dict[str, asyncio.Task] = {}
 
@@ -126,12 +128,50 @@ class SchedulerDaemon:
             return
 
         print(f"Loading schedules from {self.schedules_dir}:")
+        old_triggers = getattr(self.trigger_engine, "_triggers", {})
+        old_fingerprints = self._trigger_fingerprints
+        self.trigger_engine = TriggerEngine()
         self.schedules = load_all_schedules(self.schedules_dir)
 
+        trigger_fingerprints = {}
         for schedule in self.schedules:
-            self.trigger_engine.register(schedule)
+            trigger_fingerprint = repr(schedule.trigger)
+            old_trigger = old_triggers.get(schedule.name)
+            if (
+                old_trigger is not None
+                and old_fingerprints.get(schedule.name) == trigger_fingerprint
+            ):
+                self.trigger_engine._triggers[schedule.name] = old_trigger
+            else:
+                self.trigger_engine.register(schedule)
+            trigger_fingerprints[schedule.name] = trigger_fingerprint
 
+        self._trigger_fingerprints = trigger_fingerprints
+        self._schedules_signature = self._schedule_files_signature()
         print(f"Loaded {len(self.schedules)} active schedule(s)\n")
+
+    def _schedule_files_signature(self):
+        """Return a cheap signature for schedule files."""
+        if not self.schedules_dir.exists():
+            return ()
+        signature = []
+        for path in sorted(self.schedules_dir.glob("*.yaml")):
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            signature.append((str(path), stat.st_mtime_ns, stat.st_size))
+        return tuple(signature)
+
+    def _maybe_reload_schedules(self):
+        """Reload schedules when YAML files changed while the daemon is running."""
+        current_signature = self._schedule_files_signature()
+        if self._schedules_signature is None:
+            self._schedules_signature = current_signature
+            return
+        if current_signature != self._schedules_signature:
+            print("Schedule files changed; reloading schedules...")
+            self.load_schedules()
 
     def _find_schedule(self, name: str) -> Optional[ScheduleDefinition]:
         """Find a schedule by name."""
@@ -220,6 +260,7 @@ class SchedulerDaemon:
     async def _poll_cycle(self):
         """Single poll cycle: evaluate all triggers and dispatch as needed."""
         now = datetime.now()
+        self._maybe_reload_schedules()
 
         for schedule in self.schedules:
             # Check shutdown between schedules so Ctrl+C interrupts the
@@ -342,6 +383,20 @@ class SchedulerDaemon:
                     iterations = result.get("iterations", 0)
                     if not success:
                         error_msg = "Task completed but success conditions not met"
+
+                if success and not str(last_response or "").strip():
+                    success = False
+                    error_msg = (
+                        "Task completed without final response text; "
+                        "refusing to send a blank success notification"
+                    )
+                    print(f"  Task {schedule.name}: {error_msg}")
+
+                response_error = _detect_agent_error_response(last_response)
+                if success and response_error:
+                    success = False
+                    error_msg = response_error
+                    print(f"  Task {schedule.name}: {error_msg}")
 
                 if success:
                     break
@@ -544,6 +599,21 @@ def _resolve_model_for_backend(
             return _default_model_for_backend(backend)
 
     return default_model or _default_model_for_backend(backend)
+
+
+def _detect_agent_error_response(response: str) -> str | None:
+    """Detect synthetic SDK/API error text that should not be a success."""
+    text = str(response or "").strip()
+    if not text:
+        return None
+    error_prefixes = (
+        "API Error:",
+        "SDK Error:",
+        "Agent Error:",
+    )
+    if text.startswith(error_prefixes):
+        return text.splitlines()[0][:300]
+    return None
 
 
 def main():
