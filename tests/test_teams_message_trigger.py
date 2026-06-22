@@ -1,6 +1,6 @@
 import unittest
 
-from scheduler.schedule_loader import parse_trigger_config
+from scheduler.schedule_loader import parse_task_ref, parse_trigger_config
 from scheduler.teams_client import TeamsMessage
 from scheduler.triggers.teams_trigger import TeamsMessageTrigger
 
@@ -159,6 +159,20 @@ class TeamsMessageTriggerAllowlistTests(unittest.TestCase):
         self.assertEqual(config.allowed_chat_topic_contains, ["PMP PR Review"])
         self.assertEqual(config.allowed_chat_ids, ["chat-1"])
         self.assertEqual(config.scan_chat_limit, 30)
+
+
+class ScheduleTaskRefTests(unittest.TestCase):
+    def test_loader_rejects_unknown_task_type(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported task.type"):
+            parse_task_ref({"task": {"type": "inlineopus-4.8", "prompt": "hi"}})
+
+    def test_loader_rejects_standard_task_without_name(self):
+        with self.assertRaisesRegex(ValueError, "Standard tasks require task.name"):
+            parse_task_ref({"task": {"type": "standard"}})
+
+    def test_loader_rejects_inline_task_without_prompt(self):
+        with self.assertRaisesRegex(ValueError, "Inline tasks require task.prompt"):
+            parse_task_ref({"task": {"type": "inline"}})
 
 
 if __name__ == "__main__":

@@ -127,6 +127,14 @@ def parse_task_ref(data: dict) -> TaskRef:
     """Parse task reference from schedule data."""
     task_data = data.get("task", {})
     task_type = task_data.get("type", "standard")
+    if task_type not in {"standard", "inline"}:
+        raise ValueError(
+            f"Unsupported task.type '{task_type}'. Expected 'standard' or 'inline'."
+        )
+    if task_type == "standard" and not task_data.get("name"):
+        raise ValueError("Standard tasks require task.name.")
+    if task_type == "inline" and task_data.get("prompt") is None:
+        raise ValueError("Inline tasks require task.prompt.")
 
     return TaskRef(
         name=task_data.get("name"),
