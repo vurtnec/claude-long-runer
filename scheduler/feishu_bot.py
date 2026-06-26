@@ -6,8 +6,8 @@ Receives group messages via the Feishu Open Platform WebSocket long-connection m
 uses AgentClient's multi-turn conversation capability to maintain context,
 and replies results back to the group chat.
 
-Each group chat (chat_id) maintains a persistent AgentClient (Claude or Codex),
-equivalent to an ongoing conversation in the Claude Code CLI or Codex CLI.
+Each group chat (chat_id) maintains a persistent AgentClient (Claude, Codex,
+or OpenCode), equivalent to an ongoing conversation in the corresponding CLI.
 
 Prerequisites:
 1. Create an enterprise app at open.feishu.cn and enable bot capabilities
@@ -90,13 +90,14 @@ MODE_DISPLAY = {v: k for k, v in MODE_ALIASES.items()}
 
 # Model aliases: user-friendly names → model IDs
 MODEL_ALIASES = {
+    "opus": "claude-opus-4-8",
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5-20251001",
 }
 MODEL_DISPLAY = {v: k for k, v in MODEL_ALIASES.items()}
 
 # Backend aliases and per-backend model maps
-BACKEND_ALIASES = {"claude", "codex"}
+BACKEND_ALIASES = {"claude", "codex", "opencode"}
 
 CODEX_MODEL_ALIASES = {
     # Verified via codex.models() — 2026-04
@@ -111,9 +112,71 @@ CODEX_MODEL_DISPLAY = {v: k for k, v in CODEX_MODEL_ALIASES.items()}
 
 # Default models per backend
 BACKEND_DEFAULT_MODELS = {
-    "claude": "claude-sonnet-4-6",
+    "claude": "claude-opus-4-8",
     "codex": "gpt-5.5",
+    "opencode": None,
 }
+
+OPENCODE_DEFAULT_MODEL_DISPLAY = "OpenCode config default"
+
+
+def _is_auto_model(model: str | None) -> bool:
+    if model is None:
+        return True
+    return str(model).strip().lower() in {"", "auto", "default", "backend-default"}
+
+
+def _is_codex_model(model: str | None) -> bool:
+    return bool(model) and (model in CODEX_MODEL_IDS or str(model).startswith("gpt-"))
+
+
+def _is_claude_like_model(model: str | None) -> bool:
+    if not model:
+        return False
+    value = str(model)
+    return (
+        value in MODEL_ALIASES.values()
+        or value.startswith("claude-")
+        or value.startswith("glm-")
+    )
+
+
+def _claude_settings_default_model() -> str | None:
+    """Read the Claude Code/cc-switch Opus default model if available."""
+    settings_path = Path.home() / ".claude" / "settings.json"
+    try:
+        with open(settings_path) as f:
+            settings = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    env = settings.get("env", {})
+    opus_default = env.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+    if opus_default:
+        return opus_default
+
+    selected = str(settings.get("model") or "").strip().upper()
+    if selected:
+        value = env.get(f"ANTHROPIC_DEFAULT_{selected}_MODEL")
+        if value:
+            return value
+
+    for family in ("OPUS", "SONNET", "HAIKU", "FABLE"):
+        value = env.get(f"ANTHROPIC_DEFAULT_{family}_MODEL")
+        if value:
+            return value
+
+    return None
+
+
+def _model_display_for_backend(backend: str, model: str | None) -> str:
+    if backend == "codex":
+        return CODEX_MODEL_DISPLAY.get(model or "", model or "")
+    if backend == "claude":
+        return MODEL_DISPLAY.get(model or "", model or "")
+    if backend == "opencode":
+        return model or OPENCODE_DEFAULT_MODEL_DISPLAY
+    return model or "(default)"
 
 # Session history persistence
 SESSION_HISTORY_FILE = Path.home() / ".claude-long-runner" / "feishu_sessions.json"
@@ -128,7 +191,7 @@ class ChatSession:
     Manages a single group chat's agent session.
 
     Each chat_id maps to one ChatSession, which internally maintains a persistent
-    AgentClient (either Claude or Codex).
+    AgentClient (Claude, Codex, or OpenCode).
     An asyncio.Lock ensures messages within the same chat are processed serially.
     """
 
@@ -145,8 +208,8 @@ class ChatSession:
         self.permission_mode: str = "default"
         self.first_message: str | None = None
         self.project_alias: str | None = None
-        self.model: str = "gpt-5.5"
-        self.backend: str = "codex"  # "claude" or "codex"
+        self.model: str | None = "gpt-5.5"
+        self.backend: str = "codex"  # "claude", "codex", or "opencode"
         self.custom_title: str | None = None
         # Progress tracking for /status command
         self.working_since: datetime | None = None  # set when agent starts processing
@@ -156,14 +219,14 @@ class ChatSession:
         ] = []  # last 5: [{"name": "Edit", "input": "file.py ..."}]
 
     async def connect(self):
-        """Establish connection to Claude."""
+        """Establish connection to the selected agent backend."""
         await self.client.connect()
         self.connected = True
         self.last_active = datetime.now()
         print(f"  [Session {self.chat_id[:8]}] Connected")
 
     async def disconnect(self):
-        """Disconnect from Claude and release resources."""
+        """Disconnect from the selected agent backend and release resources."""
         if self.connected:
             try:
                 await self.client.disconnect()
@@ -188,7 +251,7 @@ class FeishuBotServer:
 
     Receives group messages via WebSocket long connection, supporting multi-turn conversations:
     - Each group chat maintains a persistent AgentClient (per-chat session)
-    - Each user message is appended to the same conversation; Claude retains full context
+    - Each user message is appended to the same conversation; the agent retains full context
     - Supports /new (reset conversation), /stop (stop session), /run (trigger schedule), etc.
     """
 
@@ -286,12 +349,12 @@ class FeishuBotServer:
         # Per-chat sessions and project selection
         self._sessions: Dict[str, ChatSession] = {}
         self._chat_project_dirs: Dict[str, Path] = {}  # chat_id → selected project_dir
-        self._chat_models: Dict[str, str] = {}  # chat_id → model ID
+        self._chat_models: Dict[str, str | None] = {}  # chat_id → model ID
         self._chat_efforts: Dict[str, str] = {}  # chat_id → effort level
         self._chat_modes: Dict[str, str] = {}  # chat_id → permission mode
         self._chat_backends: Dict[
             str, str
-        ] = {}  # chat_id → backend ("claude" or "codex")
+        ] = {}  # chat_id → backend ("claude", "codex", or "opencode")
 
         # Pending images: buffer images until user sends a text message
         self._pending_images: Dict[str, List[str]] = {}  # chat_id → [image_file_paths]
@@ -601,7 +664,7 @@ class FeishuBotServer:
             )
 
     # Bot's own slash commands — anything else gets forwarded to the agent
-    # (so users can run Claude/Codex custom slash commands like /init, /commit, etc.)
+    # (so users can run backend custom slash commands like /init, /commit, etc.)
     BOT_COMMANDS = frozenset(
         {
             "/help",
@@ -633,7 +696,7 @@ class FeishuBotServer:
         parts = text.split(None, 2)
         command = parts[0].lower()
 
-        # Forward unknown commands to the agent — they may be Claude/Codex
+        # Forward unknown commands to the agent — they may be backend-specific
         # internal slash commands (e.g. /init, /commit, /compact).
         if command not in self.BOT_COMMANDS:
             print(f"  [Forward] '{command}' is not a bot command — sending to agent")
@@ -1032,7 +1095,12 @@ class FeishuBotServer:
         if chat_id not in self._chat_models and (
             not project_alias or project_alias not in self._project_models
         ):
-            model = BACKEND_DEFAULT_MODELS.get(backend, model)
+            if backend == "claude" and _is_codex_model(model):
+                model = self._default_model_for_backend(backend)
+            elif backend == "codex" and _is_claude_like_model(model):
+                model = self._default_model_for_backend(backend)
+            elif backend == "opencode" and (not model or "/" not in str(model)):
+                model = self._default_model_for_backend(backend)
 
         model = self._resolve_model_for_backend(backend, model)
         if chat_id in self._chat_models:
@@ -1042,7 +1110,7 @@ class FeishuBotServer:
         restriction_tag = " [RESTRICTED]" if restricted else ""
         effort_tag = f", effort: {effort}" if effort else ""
         print(
-            f"  [Session] Creating new session for chat {chat_id[:8]}... (backend: {backend}, project: {project_dir}, model: {model}, mode: {mode or 'default'}{effort_tag}{restriction_tag})"
+            f"  [Session] Creating new session for chat {chat_id[:8]}... (backend: {backend}, project: {project_dir}, model: {_model_display_for_backend(backend, model)}, mode: {mode or 'default'}{effort_tag}{restriction_tag})"
         )
         client = create_agent_client(
             backend=backend,
@@ -1484,9 +1552,9 @@ class FeishuBotServer:
             "Available commands:\n\n"
             "/help  — Show this help\n"
             "/project — Show current project / switch project\n"
-            "/backend [claude|codex] — Show or switch agent backend\n"
+            "/backend [claude|codex|opencode] — Show or switch agent backend\n"
             "/mode [plan|ask|auto|edits] — Show or switch permission mode\n"
-            "/model [sonnet|haiku|gpt-5.5|gpt-5.4|gpt-5.4-mini|gpt-5.3-codex|gpt-5.2] — Show or switch model\n"
+            "/model [opus|sonnet|haiku|gpt-5.5|provider/model] — Show or switch model\n"
             "/effort [low|medium|high|xhigh|max] — Show or switch effort level\n"
             "/rename <title> — Rename current session\n"
             "/resume [number] — List recent sessions / resume by number\n"
@@ -1501,7 +1569,7 @@ class FeishuBotServer:
             "Each reply shows the current mode automatically.\n\n"
             "Tip: any /command not listed above (e.g. /init, /commit, /compact)\n"
             "is forwarded to the agent as a prompt, so you can use Claude's\n"
-            "or Codex's custom slash commands directly."
+            "Codex's, or OpenCode's custom slash commands directly."
         )
         self._reply_text(message_id, help_text)
 
@@ -1715,9 +1783,11 @@ class FeishuBotServer:
         sdk_mode = MODE_ALIASES[arg]
 
         if not session or not session.connected:
+            self._chat_modes[chat_id] = sdk_mode
             self._reply_text(
                 message_id,
-                "No active session. Start a conversation first, then switch mode.",
+                f"Mode set to: {arg} ({sdk_mode})\n"
+                "Will apply to the next new session.",
             )
             return
 
@@ -1740,10 +1810,11 @@ class FeishuBotServer:
     ):
         """Switch permission mode on an active session."""
         if not session.client.supports(Feature.PERMISSION_MODE):
+            self._chat_modes[chat_id] = sdk_mode
             self._send_message(
                 chat_id,
                 f"Backend '{session.backend}' does not support dynamic mode switching.\n"
-                "Mode is set at session creation time.",
+                "Mode will apply to the next new session.",
             )
             return
         try:
@@ -1844,12 +1915,12 @@ class FeishuBotServer:
         session = self._sessions.get(chat_id)
 
         if arg is None:
-            # Send a dropdown card listing the two backends.
+            # Send a dropdown card listing available backends.
             if session:
                 current = session.backend
-                model_display = (
-                    CODEX_MODEL_DISPLAY if session.backend == "codex" else MODEL_DISPLAY
-                ).get(session.model, session.model)
+                model_display = _model_display_for_backend(
+                    session.backend, session.model
+                )
                 intro = f"**Current backend:** `{current}` _(model: {model_display})_\n\nPick a backend:"
             else:
                 current = self._chat_backends.get(chat_id, self.default_backend)
@@ -1885,10 +1956,8 @@ class FeishuBotServer:
         self._chat_backends[chat_id] = arg
 
         # Reset model to the new backend's default (unless user explicitly set one)
-        default_model = BACKEND_DEFAULT_MODELS.get(arg, "")
-        model_display = (CODEX_MODEL_DISPLAY if arg == "codex" else MODEL_DISPLAY).get(
-            default_model, default_model
-        )
+        default_model = self._default_model_for_backend(arg)
+        model_display = _model_display_for_backend(arg, default_model)
 
         # Backend requires new session — close current one
         if session and session.connected:
@@ -1915,6 +1984,54 @@ class FeishuBotServer:
 
     # ── Model switching ──────────────────────────────────────────────────
 
+    def _default_model_for_backend(self, backend: str) -> str | None:
+        """Return this bot's default model for a backend."""
+        backend = (backend or "").lower().strip()
+        if backend == "claude":
+            if (
+                self.default_model
+                and not _is_auto_model(self.default_model)
+                and not _is_codex_model(self.default_model)
+                and "/" not in str(self.default_model)
+            ):
+                return self.default_model
+            return _claude_settings_default_model() or BACKEND_DEFAULT_MODELS["claude"]
+        if backend == "codex":
+            if (
+                self.default_model
+                and not _is_auto_model(self.default_model)
+                and _is_codex_model(self.default_model)
+            ):
+                return self.default_model
+            return BACKEND_DEFAULT_MODELS["codex"]
+        if backend == "opencode":
+            if (
+                self.default_model
+                and not _is_auto_model(self.default_model)
+                and "/" in str(self.default_model)
+            ):
+                return self.default_model
+            return BACKEND_DEFAULT_MODELS["opencode"]
+        return self.default_model
+
+    def _current_model_for_chat(
+        self, chat_id: str, backend: str, session: ChatSession | None
+    ) -> str | None:
+        """Resolve the model that /model should display for a chat."""
+        if session:
+            return session.model
+        if chat_id in self._chat_models:
+            return self._chat_models[chat_id]
+
+        project_dir = self._chat_project_dirs.get(chat_id, self.default_project_dir)
+        project_alias = self._get_project_alias(project_dir)
+        if project_alias and project_alias in self._project_models:
+            return self._resolve_model_for_backend(
+                backend, self._project_models[project_alias]
+            )
+
+        return self._default_model_for_backend(backend)
+
     def _handle_model(self, arg: str | None, chat_id: str, message_id: str):
         """Handle /model command: show or switch model (backend-aware)."""
         session = self._sessions.get(chat_id)
@@ -1922,20 +2039,72 @@ class FeishuBotServer:
         if session:
             backend = session.backend
 
+        raw_arg = arg.strip() if arg else None
+        if raw_arg and "/" in raw_arg and backend != "opencode":
+            self._chat_backends[chat_id] = "opencode"
+            backend = "opencode"
+
+        if backend == "opencode":
+            if raw_arg is None:
+                current_id = self._current_model_for_chat(chat_id, backend, session)
+                current_display = _model_display_for_backend("opencode", current_id)
+                self._reply_text(
+                    message_id,
+                    f"Current model: {current_display} [opencode]\n\n"
+                    "OpenCode models use provider/model, for example:\n"
+                    "/model anthropic/claude-sonnet-4-5\n\n"
+                    "Leave it unset to use OpenCode's opencode.json default.",
+                )
+                return
+
+            if "/" not in raw_arg:
+                self._reply_text(
+                    message_id,
+                    "OpenCode model names must use provider/model format.\n"
+                    "Example: /model anthropic/claude-sonnet-4-5",
+                )
+                return
+
+            new_model = raw_arg
+            self._chat_backends[chat_id] = "opencode"
+            self._chat_models[chat_id] = new_model
+
+            if session and session.connected:
+                if session.session_id:
+                    self._save_session_to_history(chat_id, session)
+                if self._loop and self._loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        self._close_session(chat_id), self._loop
+                    )
+                self._send_message(
+                    chat_id,
+                    f"Model switched to: {new_model} [opencode]\n"
+                    "Session reset — send a message to start.",
+                )
+            else:
+                self._send_message(
+                    chat_id,
+                    f"Model set to: {new_model} [opencode]\n"
+                    "Will take effect on next session.",
+                )
+            return
+
         # Pick the right alias map based on current backend
-        aliases = CODEX_MODEL_ALIASES if backend == "codex" else MODEL_ALIASES
+        aliases = CODEX_MODEL_ALIASES if backend == "codex" else dict(MODEL_ALIASES)
         display_map = CODEX_MODEL_DISPLAY if backend == "codex" else MODEL_DISPLAY
 
         if arg is None:
             # Send a dropdown card with the models for the current backend.
             # The dropdown values are the user-friendly aliases (opus/sonnet/
             # gpt-5.5 etc.); the existing _handle_model already accepts those.
-            if session:
-                current_id = session.model
-            else:
-                current_id = self._chat_models.get(
-                    chat_id, BACKEND_DEFAULT_MODELS.get(backend, self.default_model)
-                )
+            current_id = self._current_model_for_chat(chat_id, backend, session)
+            if backend == "claude":
+                for model_id in (
+                    self._default_model_for_backend("claude"),
+                    current_id,
+                ):
+                    if model_id and model_id not in aliases.values():
+                        aliases[_model_display_for_backend("claude", model_id)] = model_id
             current_display = display_map.get(current_id, current_id)
 
             options = []
@@ -1964,6 +2133,28 @@ class FeishuBotServer:
         arg = arg.lower().strip()
         # Try current backend's aliases first, then the other
         all_aliases = {**MODEL_ALIASES, **CODEX_MODEL_ALIASES}
+        if arg not in all_aliases and backend == "claude":
+            new_model = raw_arg
+            self._chat_models[chat_id] = new_model
+
+            if session and session.connected:
+                if session.session_id:
+                    self._save_session_to_history(chat_id, session)
+                if self._loop and self._loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        self._close_session(chat_id), self._loop
+                    )
+                self._send_message(
+                    chat_id,
+                    f"Model switched to: {new_model} [{backend}]\nSession reset — send a message to start.",
+                )
+            else:
+                self._send_message(
+                    chat_id,
+                    f"Model set to: {new_model} [{backend}]\nWill take effect on next session.",
+                )
+            return
+
         if arg not in all_aliases:
             available = ", ".join(aliases.keys())
             self._reply_text(
@@ -2071,13 +2262,17 @@ class FeishuBotServer:
                 return alias
         return None
 
-    def _resolve_model_for_backend(self, backend: str, model: str | None) -> str:
+    def _resolve_model_for_backend(self, backend: str, model: str | None) -> str | None:
         """Return a model id that is valid for the selected backend."""
-        default = BACKEND_DEFAULT_MODELS.get(backend, self.default_model)
-        if not model:
+        default = self._default_model_for_backend(backend)
+        if _is_auto_model(model):
             return default
         if backend == "codex" and model not in CODEX_MODEL_IDS:
             return default
+        if backend == "claude" and _is_codex_model(model):
+            return default
+        if backend == "opencode":
+            return model if "/" in model else None
         return model
 
     def _load_session_history(self) -> dict:
@@ -2308,6 +2503,7 @@ class FeishuBotServer:
 
         - claude: scan ~/.claude/projects/ jsonl files (existing logic)
         - codex:  call codex.thread_list() via SDK (sync wrapper around async)
+        - opencode: call `opencode session list --format json`
         """
         backend = self._chat_backends.get(chat_id, self.default_backend)
         # If a session is currently active, its backend wins (avoids confusing
@@ -2322,6 +2518,8 @@ class FeishuBotServer:
 
         if backend == "codex":
             return self._scan_codex_threads_sync(current_project_dir)[:10]
+        if backend == "opencode":
+            return self._scan_opencode_sessions_sync(current_project_dir)[:10]
         else:
             return self._scan_cli_sessions(current_project_dir)[:10]
 
@@ -2356,6 +2554,33 @@ class FeishuBotServer:
             return threads
         except Exception as e:
             print(f"  [Codex] Failed to list threads: {e}")
+            return []
+
+    def _scan_opencode_sessions_sync(self, project_dir: Path) -> list:
+        """Sync wrapper around `opencode session list --format json`."""
+        try:
+            from opencode_agent import list_opencode_sessions, opencode_available
+        except ImportError:
+            return []
+
+        if not opencode_available():
+            return []
+
+        if not (self._loop and self._loop.is_running()):
+            return []
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                list_opencode_sessions(str(project_dir.resolve()), limit=10),
+                self._loop,
+            )
+            sessions = future.result(timeout=15)
+            alias = self._get_project_alias(project_dir)
+            for entry in sessions:
+                entry["project_alias"] = alias
+            return sessions
+        except Exception as e:
+            print(f"  [OpenCode] Failed to list sessions: {e}")
             return []
 
     def _handle_resume(self, arg: str | None, chat_id: str, message_id: str):
@@ -2512,7 +2737,7 @@ class FeishuBotServer:
             entry["model"] = model
             mode = entry.get("permission_mode", "acceptEdits")
             print(
-                f"  [Session] Resuming session {session_id[:8]}... for chat {chat_id[:8]}... (backend: {backend}, project: {project_dir}, model: {model}, mode: {mode})"
+                f"  [Session] Resuming session {session_id[:8]}... for chat {chat_id[:8]}... (backend: {backend}, project: {project_dir}, model: {_model_display_for_backend(backend, model)}, mode: {mode})"
             )
             client = create_agent_client(
                 backend=backend,
@@ -2564,25 +2789,32 @@ def _resolve_schedule_model(
     backend: str,
     schedule_model: str | None,
     default_model: str | None,
-) -> str:
-    if schedule_model:
+) -> str | None:
+    if schedule_model and not _is_auto_model(schedule_model):
         return schedule_model
 
     backend = (backend or "claude").lower().strip()
+    default_value = str(default_model or "").strip()
+    default_lower = default_value.lower()
     if backend == "codex":
         if (
-            not default_model
-            or default_model in {"claude", "codex"}
-            or default_model.startswith("claude-")
+            _is_auto_model(default_model)
+            or default_lower in BACKEND_ALIASES
+            or _is_claude_like_model(default_model)
         ):
             return BACKEND_DEFAULT_MODELS["codex"]
+    elif backend == "opencode":
+        if default_model and "/" in default_value:
+            return default_model
+        return None
     elif backend == "claude":
         if (
-            not default_model
-            or default_model in {"claude", "codex"}
-            or default_model.startswith("gpt-")
+            _is_auto_model(default_model)
+            or default_lower in BACKEND_ALIASES
+            or _is_codex_model(default_model)
+            or "/" in default_value
         ):
-            return BACKEND_DEFAULT_MODELS["claude"]
+            return _claude_settings_default_model() or BACKEND_DEFAULT_MODELS["claude"]
 
     return default_model or BACKEND_DEFAULT_MODELS.get(backend, BACKEND_DEFAULT_MODELS["claude"])
 

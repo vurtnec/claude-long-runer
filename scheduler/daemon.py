@@ -567,34 +567,89 @@ class SchedulerDaemon:
         self._running = False
 
 
-def _default_model_for_backend(backend: str) -> str:
+CLAUDE_DEFAULT_MODEL = "claude-opus-4-8"
+CODEX_DEFAULT_MODEL = "gpt-5.5"
+BACKEND_MODEL_SENTINELS = {"claude", "codex", "opencode"}
+AUTO_MODEL_SENTINELS = {"", "auto", "default", "backend-default"}
+
+
+def _is_auto_model_setting(model: str | None) -> bool:
+    return model is None or str(model).strip().lower() in AUTO_MODEL_SENTINELS
+
+
+def _is_claude_model_setting(model: str | None) -> bool:
+    if not model:
+        return False
+    value = str(model).strip()
+    return value.startswith("claude-") or value.startswith("glm-")
+
+
+def _claude_settings_default_model() -> str | None:
+    """Read the Claude Code/cc-switch Opus default model if available."""
+    settings_path = Path.home() / ".claude" / "settings.json"
+    try:
+        with open(settings_path) as f:
+            settings = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    env = settings.get("env", {})
+    opus_default = env.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+    if opus_default:
+        return opus_default
+
+    selected = str(settings.get("model") or "").strip().upper()
+    if selected:
+        value = env.get(f"ANTHROPIC_DEFAULT_{selected}_MODEL")
+        if value:
+            return value
+
+    for family in ("OPUS", "SONNET", "HAIKU", "FABLE"):
+        value = env.get(f"ANTHROPIC_DEFAULT_{family}_MODEL")
+        if value:
+            return value
+    return None
+
+
+def _default_model_for_backend(backend: str) -> str | None:
     backend = (backend or "claude").lower().strip()
     if backend == "codex":
-        return "gpt-5.5"
-    return "claude-opus-4-7"
+        return CODEX_DEFAULT_MODEL
+    if backend == "opencode":
+        return None
+    return _claude_settings_default_model() or CLAUDE_DEFAULT_MODEL
 
 
 def _resolve_model_for_backend(
     backend: str,
     schedule_model: str | None,
     default_model: str | None,
-) -> str:
-    if schedule_model:
+) -> str | None:
+    if schedule_model and not _is_auto_model_setting(schedule_model):
         return schedule_model
 
     backend = (backend or "claude").lower().strip()
+    default_value = str(default_model or "").strip()
+    default_lower = default_value.lower()
     if backend == "codex":
         if (
-            not default_model
-            or default_model in {"claude", "codex"}
-            or default_model.startswith("claude-")
+            _is_auto_model_setting(default_model)
+            or default_lower in BACKEND_MODEL_SENTINELS
+            or _is_claude_model_setting(default_model)
         ):
             return _default_model_for_backend(backend)
+    elif backend == "opencode":
+        # OpenCode model ids are provider/model. If the global default is a
+        # Claude/Codex model name, omit --model so OpenCode uses opencode.json.
+        if default_model and "/" in default_value:
+            return default_model
+        return None
     elif backend == "claude":
         if (
-            not default_model
-            or default_model in {"claude", "codex"}
-            or default_model.startswith("gpt-")
+            _is_auto_model_setting(default_model)
+            or default_lower in BACKEND_MODEL_SENTINELS
+            or default_value.startswith("gpt-")
+            or "/" in default_value
         ):
             return _default_model_for_backend(backend)
 

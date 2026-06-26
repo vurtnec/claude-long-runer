@@ -46,8 +46,8 @@ history:
 
 # Default values for all scheduled tasks (overridable per schedule)
 defaults:
-  backend: "codex" # claude | codex. Schedules can override per task.
-  model: "gpt-5.5"
+  backend: "codex" # claude | codex | opencode. Schedules can override per task.
+  model: "gpt-5.5" # Use "auto" for backend defaults. Claude auto follows cc-switch Opus, then claude-opus-4-8. OpenCode models use provider/model.
   effort: "xhigh" # Thinking depth: low, medium, high, xhigh, max (omit to use CLI default)
   max_iterations: 10
   timeout_minutes: 120
@@ -55,16 +55,17 @@ defaults:
 # Feishu bot settings (for receiving messages and triggering tasks)
 feishu_bot:
   enabled: true # Start bot alongside daemon
-  # Default backend for new sessions: claude or codex.
+  # Default backend for new sessions: claude, codex, or opencode.
   # Users can override per-chat with /backend, or per-project below.
   default_backend: "codex"
-  model: "gpt-5.5"
+  model: "gpt-5.5" # Use "auto" to follow cc-switch Opus for Claude, or Claude Opus 4.8 without cc-switch.
   effort: "xhigh" # Default effort for bot sessions (omit to use CLI default)
   # Default permission mode for new bot sessions when /mode is not used.
   # Friendly aliases: plan | ask | auto | edits | bypass
   # Or raw SDK values: default | acceptEdits | plan | auto | bypassPermissions | dontAsk
   # `auto` lets the SDK decide which actions need confirmation (recommended).
-  # `bypass` = full auto: Claude never prompts; Codex approval_policy=never.
+  # `bypass` = full auto: Claude never prompts; Codex approval_policy=never;
+  # OpenCode receives --dangerously-skip-permissions at session creation.
   mode: "auto"
   max_turns: 10
   # allowed_user_ids: []            # Empty = allow all; add open_ids to restrict
@@ -77,7 +78,9 @@ feishu_bot:
   #       path: "/path/to/project"
   #       restricted: true           # Restrict bash commands to paths within the project directory
   #       model: "gpt-5.5"          # Default model for this project (inherits global if unset)
-  #       backend: "codex"           # Per-project backend override (claude | codex)
+  #                                 # For Claude: "auto" follows cc-switch Opus, then claude-opus-4-8.
+  #                                 # For OpenCode: "provider/model", or omit to use opencode.json.
+  #       backend: "codex"           # Per-project backend override (claude | codex | opencode)
   projects:
     my-project:
       path: "/path/to/your/project"

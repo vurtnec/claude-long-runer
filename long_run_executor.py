@@ -449,13 +449,13 @@ Examples:
     parser.add_argument(
         "--model",
         type=str,
-        default="gpt-5.5",
-        help="Agent model to use (default: gpt-5.5)",
+        default=None,
+        help="Agent model to use (backend default if omitted)",
     )
     parser.add_argument(
         "--backend",
         type=str,
-        choices=["codex", "claude"],
+        choices=["codex", "claude", "opencode"],
         default="codex",
         help="Agent backend to use (default: codex)",
     )

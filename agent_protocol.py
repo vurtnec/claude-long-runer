@@ -9,6 +9,7 @@ any agent SDK without knowing which one is behind the scenes.
 Supported backends:
   - claude  : Claude Agent SDK (ClaudeSDKClient)
   - codex   : OpenAI Codex Python SDK (AsyncCodex + app-server)
+  - opencode: OpenCode CLI (`opencode run --format json`)
 
 Design principles:
   1. Minimal surface — only methods the callers actually use.
@@ -103,7 +104,7 @@ class AgentClient(Protocol):
 
     @property
     def backend_name(self) -> str:
-        """Return 'claude' or 'codex' (or future backend names)."""
+        """Return 'claude', 'codex', 'opencode', or future backend names."""
         ...
 
     @property
@@ -208,7 +209,7 @@ def create_agent_client(
 
         return ClaudeAgentClient(
             project_dir=project_dir,
-            model=model or "claude-sonnet-4-6",
+            model=model or "claude-opus-4-8",
             permission_mode=permission_mode,
             resume=resume,
             restricted=restricted,
@@ -231,5 +232,20 @@ def create_agent_client(
             **extra,
         )
 
+    elif backend == "opencode":
+        from opencode_agent import OpenCodeAgentClient
+
+        return OpenCodeAgentClient(
+            project_dir=project_dir,
+            model=model,
+            permission_mode=permission_mode,
+            resume_session_id=resume,
+            effort=effort,
+            max_turns=max_turns,
+            **extra,
+        )
+
     else:
-        raise ValueError(f"Unknown backend: {backend!r}.  Supported: 'claude', 'codex'")
+        raise ValueError(
+            f"Unknown backend: {backend!r}.  Supported: 'claude', 'codex', 'opencode'"
+        )
