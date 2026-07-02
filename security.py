@@ -184,6 +184,14 @@ def extract_commands(command_string: str) -> list[str]:
     """
     commands = []
 
+    # Normalize shell line-continuations (\<newline>). In a real shell a
+    # backslash-newline is a continuation (swallowed), but shlex treats it as
+    # an escape and leaves the next command token with leading whitespace
+    # (e.g. ' git'), which then fails the allowlist string match and blocks
+    # valid commands like git. Replace with a space to match single-line shell
+    # semantics before any further parsing.
+    command_string = command_string.replace("\\\n", " ").replace("\\\r\n", " ")
+
     # shlex doesn't treat ; as a separator, so we need to pre-process
     import re
 
@@ -298,8 +306,10 @@ def extract_commands(command_string: str) -> list[str]:
                 continue
 
             if expect_command:
-                # Extract the base command name (handle paths like /usr/bin/python)
-                cmd = os.path.basename(token)
+                # Extract the base command name (handle paths like /usr/bin/python).
+                # .strip() guards against any residual leading/trailing whitespace
+                # on the token so the allowlist match is not falsely missed.
+                cmd = os.path.basename(token).strip()
                 commands.append(cmd)
                 expect_command = False
 
