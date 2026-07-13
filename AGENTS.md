@@ -1,21 +1,21 @@
-# CLAUDE.md — Architecture Reference
+# AGENTS.md — Architecture Reference
 
 This file is for AI agents working on this codebase. For human setup instructions, see [README.md](README.md).
 
 ## Project Overview
 
-Vurtnec Loom is a Python framework built on the Claude Agent SDK (with Codex SDK as an alternate backend) for weaving AI agents into real workflows. Three main capabilities:
+Vurtnec Loom is a Python framework built on the Codex Agent SDK (with Codex SDK as an alternate backend) for weaving AI agents into real workflows. Three main capabilities:
 
 1. **Long-Run Tasks** — iterative task executor with state persistence
 2. **Scheduler** — cron-based daemon with multi-channel notifications
-3. **Feishu Bot** — interactive group chat bot with per-chat sessions, supporting both Claude and Codex backends
+3. **Feishu Bot** — interactive group chat bot with per-chat sessions, supporting both Codex and Codex backends
 
 ## Project Structure
 
 ```
-claude-long-runner/
+Codex-long-runner/
 ├── long_run_executor.py      # Main orchestrator: task loop, state mgmt, success checking
-├── client.py                 # Claude SDK client factory with MCP server integration
+├── client.py                 # Codex SDK client factory with MCP server integration
 ├── task_config.py            # Task configuration loader from task.json
 ├── state_manager.py          # JSON-based state persistence and tracking
 ├── success_checker.py        # Success condition evaluation engine
@@ -78,15 +78,15 @@ Main orchestrator. Runs the task loop:
 1. Load task config from `task.json`
 2. Initialize or resume state from `state_manager`
 3. Render `init_prompt.md` (first iteration) or `iter_prompt.md` (subsequent)
-4. Send prompt to Claude via `client.py`
+4. Send prompt to Codex via `client.py`
 5. Run `processor.py` to parse response and update state
 6. Check success conditions via `success_checker.py`
 7. Repeat until success or max iterations
 
 ### client.py
 
-Factory for Claude SDK clients. Handles:
-- MCP server loading from `~/.claude.json` (same config as Claude Code CLI)
+Factory for Codex SDK clients. Handles:
+- MCP server loading from `~/.Codex.json` (same config as Codex CLI)
 - Global vs project-level MCP server resolution
 - Browser tool integration (Playwright, Puppeteer, BrowserMCP)
 
@@ -289,8 +289,8 @@ Available in schedule YAML and notification templates:
 
 WebSocket-based bot using `lark-oapi` SDK. Key design:
 
-- **Per-chat sessions**: Each group chat maintains independent Claude session
-- **Session persistence**: Recent sessions stored at `~/.claude-long-runner/feishu_sessions.json` (up to 10 per chat)
+- **Per-chat sessions**: Each group chat maintains independent Codex session
+- **Session persistence**: Recent sessions stored at `~/.Codex-long-runner/feishu_sessions.json` (up to 10 per chat)
 - **Session timeout**: Auto-disconnect after 50 hours of inactivity
 - **Project switching**: `/project <alias>` changes working directory for the session
 
@@ -318,7 +318,7 @@ WebSocket-based bot using `lark-oapi` SDK. Key design:
 
 ## MCP Integration
 
-MCP servers are loaded from `~/.claude.json` (shared with Claude Code CLI):
+MCP servers are loaded from `~/.Codex.json` (shared with Codex CLI):
 
 - **Global**: `mcpServers` at root level → available to all projects
 - **Project-level**: `projects.<path>.mcpServers` → available when that project is active
@@ -350,7 +350,6 @@ Supported browser tools:
 ## Dependencies
 
 ```
-claude-agent-sdk>=0.1.47
 openai-codex>=0.1.0b3,<0.2
 pyyaml>=6.0
 croniter>=2.0.0
@@ -363,5 +362,5 @@ python-dotenv>=1.0.0
 - **No database**: All state is JSON files for simplicity and portability
 - **Directory-based tasks**: Each task is a self-contained directory with config, prompts, and processor
 - **Allowlist security**: Bash commands must be explicitly allowed; tasks can extend the base set
-- **MCP reuse**: Leverages existing Claude Code CLI MCP config rather than maintaining separate config
+- **MCP reuse**: Leverages existing Codex CLI MCP config rather than maintaining separate config
 - **WebSocket for bot**: Uses Feishu WebSocket mode (no public URL / webhook endpoint needed)

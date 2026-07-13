@@ -14,6 +14,14 @@ from .triggers.cron_trigger import CronTrigger
 from .triggers.file_trigger import FileChangeTrigger
 from .triggers.http_trigger import HttpConditionTrigger
 
+try:
+    from .triggers.teams_trigger import TeamsMessageTrigger
+except ImportError as e:
+    TeamsMessageTrigger = None
+    TEAMS_TRIGGER_IMPORT_ERROR = e
+else:
+    TEAMS_TRIGGER_IMPORT_ERROR = None
+
 
 def create_trigger(config: TriggerConfig) -> BaseTrigger:
     """Factory function to create a trigger instance from config."""
@@ -26,6 +34,18 @@ def create_trigger(config: TriggerConfig) -> BaseTrigger:
         "headers": config.headers,
         "condition": config.condition,
         "operator": config.operator,
+        "chat_topic_contains": config.chat_topic_contains,
+        "chat_id": config.chat_id,
+        "sender_displayname": config.sender_displayname,
+        "allowed_chat_ids": config.allowed_chat_ids,
+        "allowed_chat_topic_contains": config.allowed_chat_topic_contains,
+        "allowed_sender_displaynames": config.allowed_sender_displaynames,
+        "allowed_sender_ids": config.allowed_sender_ids,
+        "content_pattern": config.content_pattern,
+        "match_html": config.match_html,
+        "exclude_self": config.exclude_self,
+        "scan_chat_limit": config.scan_chat_limit,
+        "min_message_length": config.min_message_length,
     }
 
     if config.type == TriggerType.CRON:
@@ -34,6 +54,12 @@ def create_trigger(config: TriggerConfig) -> BaseTrigger:
         return FileChangeTrigger(config_dict)
     elif config.type == TriggerType.HTTP_CONDITION:
         return HttpConditionTrigger(config_dict)
+    elif config.type == TriggerType.TEAMS_MESSAGE:
+        if TeamsMessageTrigger is None:
+            raise ImportError(
+                f"teams_message trigger requires optional dependencies: {TEAMS_TRIGGER_IMPORT_ERROR}"
+            )
+        return TeamsMessageTrigger(config_dict)
     elif config.type == TriggerType.COMPOSITE:
         sub_triggers = [create_trigger(tc) for tc in config.triggers]
         return CompositeTrigger(config_dict, sub_triggers)
@@ -53,6 +79,10 @@ class TriggerEngine:
     def register(self, schedule: ScheduleDefinition):
         """Register a schedule's trigger for evaluation."""
         trigger = create_trigger(schedule.trigger)
+        # Tag the trigger with its owning schedule's name so stateful triggers
+        # (e.g. TeamsMessageTrigger watermarks) can namespace their state.
+        if hasattr(trigger, "owner_name"):
+            trigger.owner_name = schedule.name
         self._triggers[schedule.name] = trigger
 
     def evaluate(self, schedule_name: str) -> TriggerResult:

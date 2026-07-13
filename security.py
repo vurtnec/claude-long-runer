@@ -9,7 +9,6 @@ Uses an allowlist approach - only explicitly permitted commands can run.
 import os
 import shlex
 
-
 # Base allowed commands for development tasks
 # These are always available for all tasks
 BASE_ALLOWED_COMMANDS = {
@@ -70,6 +69,10 @@ BASE_ALLOWED_COMMANDS = {
     "false",
     "test",
     "[",
+    "diff",  # read-only file comparison
+    "bash",
+    "sh",
+    "zsh",
     # Environment & path utilities
     "which",
     "export",
@@ -97,7 +100,11 @@ BASE_ALLOWED_COMMANDS = {
     "az",
     "ssh",
     "pip",
-    "pip3"
+    "pip3",
+    # macOS scripting bridge — used by Teams boss-message handler to
+    # drop TODO items into Apple Notes via AppleScript heredocs.
+    "osascript",
+    "mvn",
 }
 
 # Task-specific allowed commands (set at runtime)
@@ -177,8 +184,38 @@ def extract_commands(command_string: str) -> list[str]:
     """
     commands = []
 
+    # Normalize shell line-continuations (\<newline>). In a real shell a
+    # backslash-newline is a continuation (swallowed), but shlex treats it as
+    # an escape and leaves the next command token with leading whitespace
+    # (e.g. ' git'), which then fails the allowlist string match and blocks
+    # valid commands like git. Replace with a space to match single-line shell
+    # semantics before any further parsing.
+    command_string = command_string.replace("\\\n", " ").replace("\\\r\n", " ")
+
     # shlex doesn't treat ; as a separator, so we need to pre-process
     import re
+
+    # Pre-pass: extract subshell `$(...)` contents and recurse on them, then
+    # blank them out of the outer command. Without this, a command like
+    #   TOKEN=$(az account get-access-token ...)
+    # gets shlex-tokenised as ["TOKEN=$(az", "account", ...]; the second
+    # token is treated as a fresh command, blocking valid usage. Backtick
+    # subshells `…` are handled the same way.
+    subshell_inners: list[str] = []
+    # Iterate; the regex doesn't handle nested $( ) but that's rare in
+    # practice and we'd rather under-extract (fail safe) than over-extract.
+    _subshell_re = re.compile(r"\$\(([^()]*?)\)|`([^`]*?)`")
+    while True:
+        m = _subshell_re.search(command_string)
+        if not m:
+            break
+        inner = (m.group(1) if m.group(1) is not None else m.group(2)).strip()
+        if inner:
+            subshell_inners.append(inner)
+        command_string = command_string[: m.start()] + " " + command_string[m.end() :]
+
+    for inner in subshell_inners:
+        commands.extend(extract_commands(inner))
 
     # Split on semicolons that aren't inside quotes and aren't escaped (\;)
     # This handles common cases like "echo hello; ls"
@@ -204,6 +241,9 @@ def extract_commands(command_string: str) -> list[str]:
         expect_command = True
         # Track find -exec ... \; blocks — everything between -exec and \;/+ is find's args
         in_find_exec = False
+        # `for VAR in …` and `while/until <cond> do …` — skip the loop
+        # variable name and iteration values until we reach `do`.
+        skip_until_do = False
 
         for token in tokens:
             # Handle find -exec block: skip tokens until terminator
@@ -212,9 +252,29 @@ def extract_commands(command_string: str) -> list[str]:
                     in_find_exec = False
                 continue
 
+            # Stop on shell comment marker — everything after a bare `#`
+            # token is the rest-of-line comment, not commands. (URL fragments
+            # like `https://x#frag` survive: shlex keeps them as one token,
+            # so this only fires for true `# foo` comments.)
+            if token == "#" or (token.startswith("#") and len(token) > 1):
+                break
+
+            # In a for/while/until preamble — keep eating tokens until we
+            # hit the `do` that introduces the loop body.
+            if skip_until_do:
+                if token == "do":
+                    skip_until_do = False
+                    expect_command = True
+                continue
+
             # Shell operators indicate a new command follows
             if token in ("|", "||", "&&", "&"):
                 expect_command = True
+                continue
+
+            # for/while/until starts a loop preamble — skip until `do`
+            if token in ("for", "while", "until"):
+                skip_until_do = True
                 continue
 
             # Skip shell keywords that precede commands
@@ -224,9 +284,6 @@ def extract_commands(command_string: str) -> list[str]:
                 "else",
                 "elif",
                 "fi",
-                "for",
-                "while",
-                "until",
                 "do",
                 "done",
                 "case",
@@ -249,8 +306,10 @@ def extract_commands(command_string: str) -> list[str]:
                 continue
 
             if expect_command:
-                # Extract the base command name (handle paths like /usr/bin/python)
-                cmd = os.path.basename(token)
+                # Extract the base command name (handle paths like /usr/bin/python).
+                # .strip() guards against any residual leading/trailing whitespace
+                # on the token so the allowlist match is not falsely missed.
+                cmd = os.path.basename(token).strip()
                 commands.append(cmd)
                 expect_command = False
 
@@ -481,7 +540,10 @@ def validate_path_restriction(
         if resolved.startswith(project_dir_normalized):
             return True, ""
 
-        return False, f"Path '{path_str}' (resolves to '{resolved}') is outside project directory '{project_dir}'"
+        return (
+            False,
+            f"Path '{path_str}' (resolves to '{resolved}') is outside project directory '{project_dir}'",
+        )
 
     # Parse tokens and check path-like arguments
     expect_command = True
@@ -491,7 +553,12 @@ def validate_path_restriction(
         if skip_next:
             skip_next = False
             # This token is a redirect target — validate it as a path
-            if token.startswith("/") or token.startswith("./") or token.startswith("../") or ".." in token:
+            if (
+                token.startswith("/")
+                or token.startswith("./")
+                or token.startswith("../")
+                or ".." in token
+            ):
                 ok, reason = _is_path_allowed(token, is_command_position=False)
                 if not ok:
                     return False, reason
@@ -510,8 +577,13 @@ def validate_path_restriction(
         # Handle combined redirect+path like >/path or >>/path
         for redirect_op in (">>", ">", "2>>", "2>", "&>>", "&>"):
             if token.startswith(redirect_op) and len(token) > len(redirect_op):
-                path_part = token[len(redirect_op):]
-                if path_part.startswith("/") or path_part.startswith("./") or path_part.startswith("../") or ".." in path_part:
+                path_part = token[len(redirect_op) :]
+                if (
+                    path_part.startswith("/")
+                    or path_part.startswith("./")
+                    or path_part.startswith("../")
+                    or ".." in path_part
+                ):
                     ok, reason = _is_path_allowed(path_part, is_command_position=False)
                     if not ok:
                         return False, reason
@@ -606,11 +678,12 @@ def make_bash_security_hook(restricted_project_dir: str | None = None):
         # Step 2: Path restriction check (only when restricted)
         if restricted_project_dir:
             for segment in segments:
-                is_ok, reason = validate_path_restriction(segment, restricted_project_dir)
+                is_ok, reason = validate_path_restriction(
+                    segment, restricted_project_dir
+                )
                 if not is_ok:
                     return {"decision": "block", "reason": reason}
 
         return {}
 
     return _hook
-

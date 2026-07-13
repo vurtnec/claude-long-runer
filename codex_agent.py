@@ -2,37 +2,39 @@
 Codex Agent Client — AgentClient implementation backed by OpenAI Codex Python SDK.
 ====================================================================================
 
-Wraps the Codex Python SDK (codex-app-server-sdk) to expose the unified
+Wraps the official OpenAI Codex Python SDK (openai-codex) to expose the unified
 AgentClient protocol.
 
-Installation (SDK is not yet on PyPI — install from source):
+Installation:
 
-    git clone https://github.com/openai/codex.git
-    cd codex/sdk/python
-    pip install -e .
+    pip install openai-codex
 
 Known issues & workarounds (as of 2026-04):
   - Issue #16554: 64 KiB stdio crash → avoid prompts > 60 KB
   - Issue #17829: FileChangeItem.status rejects "in_progress"
                   → caught below with try/except on each notification
   - Issue #19348: Unrecognised notification types → logged, not crashed
+  - The 0.1.0b3 generated schema predates GPT-5.6 max/ultra effort values
+                  → raw notifications are normalized below for newer CLIs
 
 Upgrade strategy:
   - ALL Codex SDK imports are in this file.  No other module imports codex_*.
   - Notification handling is defensive (unknown types → warning, not crash).
-  - When the SDK publishes to PyPI, just change the install command.
   - When APIs change, only this file needs updating.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
-from agent_protocol import AgentClient, AgentEvent, EventType, Feature
+from agent_protocol import AgentEvent, EventType, Feature
 
 logger = logging.getLogger(__name__)
 
@@ -45,23 +47,18 @@ _CODEX_SDK_AVAILABLE = False
 _CODEX_IMPORT_ERROR: str | None = None
 
 try:
-    from codex_app_server import AsyncCodex
-    from codex_app_server._inputs import TextInput
-    from codex_app_server.client import AppServerConfig
+    from openai_codex import ApprovalMode, AsyncCodex, CodexConfig, TextInput
 
     _CODEX_SDK_AVAILABLE = True
 except ImportError as exc:
     _CODEX_IMPORT_ERROR = (
         f"Codex SDK not installed ({exc}).\n"
         "\n"
-        "Install from source:\n"
-        "  pip install git+https://github.com/openai/codex.git#subdirectory=sdk/python\n"
+        "Install the official OpenAI package from PyPI:\n"
+        "  pip install openai-codex\n"
         "\n"
-        "You also need the codex CLI binary installed (npm install -g @openai/codex,\n"
-        "or brew install codex).\n"
-        "\n"
-        "Or, when the SDK is published to PyPI with bundled binary:\n"
-        "  pip install codex-app-server-sdk"
+        "The package installs a bundled Codex CLI fallback automatically; "
+        "preview models may require a newer standalone Codex CLI."
     )
 
 
@@ -83,6 +80,9 @@ _EFFORT_MAP = {
     "none": "none",
 }
 
+DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
+DEFAULT_CODEX_EFFORT = "high"
+
 
 def _normalize_effort(value: str | None) -> str | None:
     """Translate effort value to a Codex-valid one, or None if unknown."""
@@ -92,6 +92,101 @@ def _normalize_effort(value: str | None) -> str | None:
     if mapped is None:
         logger.warning("Unknown effort value %r, dropping", value)
     return mapped
+
+
+# The published SDK exposes two high-level approval modes.  Keep accepting the
+# bot's legacy Claude/Codex vocabulary, but translate it at this boundary.
+_DENY_ALL_APPROVAL_VALUES = {
+    "bypass",
+    "bypasspermissions",
+    "dontask",
+    "never",
+}
+_AUTO_REVIEW_APPROVAL_VALUES = {
+    "acceptedits",
+    "auto",
+    "autoreview",
+    "default",
+    "onfailure",
+    "onrequest",
+    "plan",
+    "untrusted",
+}
+
+
+def _normalize_approval_policy(value: str | None) -> str | None:
+    """Translate a Claude/bot permission_mode to an SDK ApprovalMode value."""
+    if value is None:
+        return None
+    key = value.lower().strip().replace("_", "").replace("-", "")
+    if key in _DENY_ALL_APPROVAL_VALUES:
+        return "deny_all"
+    if key in _AUTO_REVIEW_APPROVAL_VALUES:
+        return "auto_review"
+    logger.warning(
+        "Unknown approval_policy value %r, dropping (Codex will use default)",
+        value,
+    )
+    return None
+
+
+def _unwrap_thread_item(item: Any) -> Any:
+    """
+    ItemStarted/ItemCompleted notifications carry `item: ThreadItem`, which is
+    a Pydantic RootModel discriminated union.  Unwrap to the inner typed item
+    (AgentMessageThreadItem, CommandExecutionThreadItem, etc.) so attribute
+    lookups like `.type`, `.text`, `.command` work directly.
+
+    Falls back to the original object if it's already unwrapped — keeps the
+    callers defensive against minor SDK shape changes.
+    """
+    if item is None:
+        return None
+    inner = getattr(item, "root", None)
+    return inner if inner is not None else item
+
+
+def _namespace_from_json(value: Any) -> Any:
+    """Convert raw forward-compatible SDK payload dictionaries to objects."""
+    if isinstance(value, dict):
+        return SimpleNamespace(
+            **{
+                str(key): _namespace_from_json(item)
+                for key, item in value.items()
+                if str(key).isidentifier()
+            }
+        )
+    if isinstance(value, list):
+        return [_namespace_from_json(item) for item in value]
+    return value
+
+
+def _get_item_id(*objects: Any) -> str | None:
+    """
+    Best-effort item id extraction across Codex SDK model shapes.
+
+    Notification payloads and thread items have changed names across SDK
+    versions (`item_id`, `itemId`, nested `item.id`, RootModel-wrapped item).
+    The id is only used for de-duplicating streamed agent text, so failing to
+    find one should degrade to current-message comparison instead of raising.
+    """
+    for obj in objects:
+        if obj is None:
+            continue
+        for attr in ("item_id", "itemId", "id"):
+            value = getattr(obj, attr, None)
+            if value:
+                return str(value)
+
+        nested = getattr(obj, "item", None)
+        if nested is not None:
+            nested = _unwrap_thread_item(nested)
+            for attr in ("item_id", "itemId", "id"):
+                value = getattr(nested, attr, None)
+                if value:
+                    return str(value)
+
+    return None
 
 
 async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
@@ -112,12 +207,25 @@ async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
     from datetime import datetime as _dt
 
     codex_bin = _resolve_codex_bin()
-    config = AppServerConfig(codex_bin=codex_bin) if codex_bin else None
+    config = CodexConfig(codex_bin=codex_bin) if codex_bin else None
     codex = AsyncCodex(config=config) if config else AsyncCodex()
+
+    # Codex's thread_list defaults to "interactive sources" only — which
+    # excludes threads tagged `unknown`.  Sessions started via the
+    # app-server SDK (i.e. our Feishu bot) come back as `unknown`, so the
+    # default filter silently hides them.  Pass an explicit list that
+    # includes the kinds a user would want to resume from the bot.
+    source_kinds = ["cli", "vscode", "exec", "appServer", "unknown"]
 
     try:
         await codex.__aenter__()
-        result = await codex.thread_list(cwd=project_dir, limit=limit)
+        result = await codex.thread_list(
+            cwd=project_dir,
+            limit=limit,
+            source_kinds=source_kinds,
+            sort_key="updated_at",
+            sort_direction="desc",
+        )
     except Exception as e:
         logger.warning("Codex thread_list failed for %s: %s", project_dir, e)
         try:
@@ -125,6 +233,41 @@ async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
         except Exception:
             pass
         return []
+
+    def _path_str(value, fallback: str) -> str:
+        # Codex SDK returns `cwd` as an `AbsolutePathBuf` RootModel; unwrap
+        # to a plain str so callers can pass it to `pathlib.Path(...)`.
+        if value is None:
+            return fallback
+        if isinstance(value, str):
+            return value
+        root = getattr(value, "root", None)
+        if isinstance(root, str):
+            return root
+        return str(value)
+
+    def _thread_model(thread: Any) -> str:
+        model = getattr(thread, "model", None) or getattr(thread, "model_id", None)
+        if isinstance(model, str) and model:
+            return model
+
+        path = _path_str(getattr(thread, "path", None), "")
+        if not path:
+            return ""
+
+        last_model = ""
+        try:
+            with open(path) as f:
+                for line in f:
+                    if '"turn_context"' not in line:
+                        continue
+                    obj = json.loads(line)
+                    model = obj.get("payload", {}).get("model")
+                    if isinstance(model, str) and model:
+                        last_model = model
+        except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+            return ""
+        return last_model
 
     threads: list[dict] = []
     for t in getattr(result, "data", []) or []:
@@ -137,10 +280,12 @@ async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
                 "summary": preview[:50],
                 "permission_mode": "default",  # Codex has no Claude-style modes
                 "project_alias": None,         # filled in by caller
-                "project_dir": getattr(t, "cwd", project_dir),
+                "project_dir": _path_str(getattr(t, "cwd", None), project_dir),
                 "created_at": created,
                 "last_active": updated,
-                "model": getattr(t, "model_provider", "") or "",
+                # ThreadList exposes model_provider (e.g. "openai"), not the
+                # model id. Do not persist provider names as resumable models.
+                "model": _thread_model(t),
                 "backend": "codex",
                 "source": "codex",
             })
@@ -162,12 +307,11 @@ def _resolve_codex_bin() -> str | None:
 
     Priority:
       1. CODEX_BIN environment variable (explicit override)
-      2. `codex` on PATH (e.g. installed via npm or homebrew)
-      3. None → let the SDK use its bundled runtime (if available)
+      2. `codex` on PATH (kept current by the operator)
+      3. None → the SDK's bundled `openai-codex-cli-bin` fallback
 
-    The SDK published to PyPI bundles `openai-codex-cli-bin`, but the
-    install-from-source path does NOT include the binary.  This resolver
-    bridges the gap.
+    Preview models can require a CLI newer than the Python SDK's bundled
+    runtime, so an up-to-date standalone CLI takes precedence when available.
     """
     explicit = os.environ.get("CODEX_BIN")
     if explicit and Path(explicit).is_file():
@@ -234,10 +378,10 @@ class CodexAgentClient:
     def __init__(
         self,
         project_dir: str | None = None,
-        model: str = "o3",
+        model: str = DEFAULT_CODEX_MODEL,
         approval_policy: str | None = None,
         resume_thread_id: str | None = None,
-        effort: str | None = None,
+        effort: str | None = DEFAULT_CODEX_EFFORT,
         max_turns: int = 1000,
         **extra,
     ):
@@ -246,7 +390,7 @@ class CodexAgentClient:
 
         self._project_dir = str(Path(project_dir).resolve()) if project_dir else None
         self._model = model
-        self._approval_policy = approval_policy
+        self._approval_policy = _normalize_approval_policy(approval_policy)
         self._resume_thread_id = resume_thread_id
         self._effort = _normalize_effort(effort)  # map Claude vocab → Codex
         self._max_turns = max_turns
@@ -258,6 +402,9 @@ class CodexAgentClient:
         self._turn_handle: Any = None     # AsyncTurnHandle
         self._session_id: str | None = resume_thread_id
         self._connected: bool = False
+        self._streamed_agent_text: str = ""
+        self._streamed_agent_text_by_item: dict[str, str] = {}
+        self._current_streamed_agent_item_id: str | None = None
 
     # ── Identity ─────────────────────────────────────────────────────────
 
@@ -276,16 +423,16 @@ class CodexAgentClient:
         Start the Codex app-server subprocess and open (or resume) a thread.
 
         Parameter mapping (Codex SDK separates thread-level vs turn-level):
-          - thread_start(): model, cwd, approval_policy   (set once)
+          - thread_start(): model, cwd, approval_mode     (set once)
           - thread.turn():  effort, model override        (per-message)
         So `effort` is stored on self and applied in send_message().
         """
-        # Build AppServerConfig — explicitly point to the codex binary if
-        # the bundled runtime isn't available (source-install workaround).
+        # Prefer an explicit/current standalone CLI because preview models can
+        # require a newer runtime than the SDK bundle. Fall back to the bundle.
         codex_bin = _resolve_codex_bin()
         if codex_bin:
             logger.info("Using codex binary at %s", codex_bin)
-            config = AppServerConfig(codex_bin=codex_bin)
+            config = CodexConfig(codex_bin=codex_bin)
             self._codex = AsyncCodex(config=config)
         else:
             self._codex = AsyncCodex()
@@ -296,11 +443,21 @@ class CodexAgentClient:
         if self._project_dir:
             thread_kwargs["cwd"] = self._project_dir
         if self._approval_policy:
-            thread_kwargs["approval_policy"] = self._approval_policy
+            thread_kwargs["approval_mode"] = ApprovalMode(self._approval_policy)
+
+        # Enable web browsing by default so the model can search / fetch URLs.
+        # WebSearchMode: disabled | cached | live  — "live" hits the network.
+        # Caller can override via the `config` extra kwarg.
+        thread_kwargs["config"] = {"web_search": "live"}
 
         # Forward any extra kwargs the caller provided that match thread_start's API
-        # (unknown kwargs would crash thread_start, so callers must know the schema)
-        thread_kwargs.update(self._extra)
+        # (unknown kwargs would crash thread_start, so callers must know the schema).
+        # If caller passes their own `config`, shallow-merge so web_search stays on
+        # unless they explicitly override it.
+        extra = dict(self._extra)
+        if isinstance(extra.get("config"), dict):
+            thread_kwargs["config"] = {**thread_kwargs["config"], **extra.pop("config")}
+        thread_kwargs.update(extra)
 
         if self._resume_thread_id:
             logger.info("Resuming Codex thread %s", self._resume_thread_id[:8])
@@ -343,6 +500,9 @@ class CodexAgentClient:
         if self._effort:
             turn_kwargs["effort"] = self._effort
 
+        self._streamed_agent_text = ""
+        self._streamed_agent_text_by_item = {}
+        self._current_streamed_agent_item_id = None
         self._turn_handle = await self._thread.turn(TextInput(prompt), **turn_kwargs)
 
     async def receive_events(self) -> AsyncIterator[AgentEvent]:
@@ -359,6 +519,7 @@ class CodexAgentClient:
 
         try:
             async for notification in self._turn_handle.stream():
+                turn_completed = getattr(notification, "method", "") == "turn/completed"
                 try:
                     event = self._map_notification(notification)
                     if event is not None:
@@ -372,17 +533,27 @@ class CodexAgentClient:
                         getattr(notification, "method", "?"),
                         e,
                     )
+                    if turn_completed:
+                        break
                     continue
+                # A newer CLI may add fields/enums that the published SDK's
+                # generated TurnCompletedNotification does not yet know. The
+                # SDK then exposes a raw UnknownNotification and its own
+                # stream cannot recognize the terminator, so stop by method.
+                if turn_completed:
+                    break
         except Exception as e:
             # Stream-level error — yield as ERROR event so the caller can
-            # decide how to handle it (e.g. show message to user)
+            # decide how to handle it (e.g. show message to user). Skip the
+            # trailing RESULT to keep the event contract symmetric with the
+            # Claude backend, which only emits RESULT on a real ResultMessage.
             logger.error("Codex stream error: %s", e)
             yield AgentEvent(
                 type=EventType.ERROR,
                 metadata={"error": str(e)},
             )
+            return
 
-        # Always emit a RESULT at the end so the caller knows we're done
         yield AgentEvent(
             type=EventType.RESULT,
             metadata={"session_id": self._session_id},
@@ -393,7 +564,7 @@ class CodexAgentClient:
     def interrupt(self) -> None:
         if self._turn_handle:
             try:
-                self._turn_handle.interrupt()
+                asyncio.get_running_loop().create_task(self._turn_handle.interrupt())
             except Exception as e:
                 logger.warning("Codex interrupt error: %s", e)
 
@@ -419,6 +590,27 @@ class CodexAgentClient:
         """
         method: str = getattr(notification, "method", "")
         payload: Any = getattr(notification, "payload", None)
+        raw_params = getattr(payload, "params", None)
+        if isinstance(raw_params, dict):
+            payload = _namespace_from_json(raw_params)
+
+        # Diagnostic — every notification, with payload type + key fields, so we
+        # can see why a turn produced no TEXT events.  Set CODEX_DEBUG_NOTIFS=0
+        # to silence after debugging.
+        if os.environ.get("CODEX_DEBUG_NOTIFS", "1") != "0":
+            payload_type = type(payload).__name__
+            extra = ""
+            item = getattr(payload, "item", None)
+            if item is not None:
+                inner = getattr(item, "root", item)
+                extra = f" item.type={getattr(inner, 'type', '?')!r}"
+            elif hasattr(payload, "delta"):
+                d = getattr(payload, "delta", "")
+                if isinstance(d, str) and len(d) > 60:
+                    extra = f" delta={d[:60]!r}…"
+                else:
+                    extra = f" delta={d!r}"
+            logger.info("[codex notif] %s payload=%s%s", method, payload_type, extra)
 
         # Look up handler by exact method match first, then by prefix
         handler_name = _NOTIFICATION_HANDLERS.get(method)
@@ -451,16 +643,28 @@ class CodexAgentClient:
             if text is None and hasattr(payload, "content"):
                 text = str(payload.content)
         if text:
+            text = str(text)
+            if method.startswith("item/agentMessage/delta"):
+                item_id = _get_item_id(payload)
+                if item_id and item_id != self._current_streamed_agent_item_id:
+                    self._streamed_agent_text = ""
+                    self._current_streamed_agent_item_id = item_id
+                self._streamed_agent_text += text
+                if item_id:
+                    self._streamed_agent_text_by_item[item_id] = (
+                        self._streamed_agent_text_by_item.get(item_id, "") + text
+                    )
             return AgentEvent(type=EventType.TEXT, text=text)
         return None
 
     def _on_item_started(self, method: str, payload: Any) -> AgentEvent | None:
         """Handle item/started — usually a tool invocation beginning."""
-        item = getattr(payload, "item", payload)
+        item = _unwrap_thread_item(getattr(payload, "item", payload))
         item_type = getattr(item, "type", "")
 
-        # Detect tool use from item type
-        if item_type in ("command_execution", "file_change", "mcp_tool_call"):
+        # Item types use camelCase in the SDK schema (agentMessage,
+        # commandExecution, fileChange, mcpToolCall, etc.).
+        if item_type in ("commandExecution", "fileChange", "mcpToolCall"):
             tool_name = (
                 getattr(item, "name", None)
                 or getattr(item, "command", None)
@@ -475,11 +679,11 @@ class CodexAgentClient:
         return None
 
     def _on_item_completed(self, method: str, payload: Any) -> AgentEvent | None:
-        """Handle item/completed — tool execution result."""
-        item = getattr(payload, "item", payload)
+        """Handle item/completed — final assistant message or tool result."""
+        item = _unwrap_thread_item(getattr(payload, "item", payload))
         item_type = getattr(item, "type", "")
 
-        if item_type in ("command_execution", "file_change", "mcp_tool_call"):
+        if item_type in ("commandExecution", "fileChange", "mcpToolCall"):
             status = getattr(item, "status", "completed")
             output = getattr(item, "output", None) or getattr(item, "result", None)
             return AgentEvent(
@@ -487,11 +691,45 @@ class CodexAgentClient:
                 result_content=str(output)[:500] if output else "",
                 is_error=(status == "failed"),
             )
-        elif item_type == "agent_message":
-            # Final message text
+        elif item_type == "agentMessage":
+            # Final assistant message — codex often emits only the completed
+            # item (no per-token deltas), so this is what users actually see.
+            # When deltas were already emitted, completed is a full snapshot
+            # of the same message.  Returning it again makes short replies
+            # look doubled in Feishu (e.g. "1" -> "11").
             text = getattr(item, "text", None) or getattr(item, "content", None)
             if text:
-                return AgentEvent(type=EventType.TEXT, text=str(text))
+                text = str(text)
+                item_id = _get_item_id(payload, item)
+                streamed = (
+                    self._streamed_agent_text_by_item.get(item_id, "")
+                    if item_id
+                    else ""
+                )
+                if not streamed:
+                    streamed = self._streamed_agent_text
+
+                if streamed:
+                    if text == streamed:
+                        if item_id:
+                            self._streamed_agent_text_by_item.pop(item_id, None)
+                        self._streamed_agent_text = ""
+                        self._current_streamed_agent_item_id = None
+                        return None
+                    if text.startswith(streamed):
+                        suffix = text[len(streamed):]
+                        if item_id:
+                            self._streamed_agent_text_by_item.pop(item_id, None)
+                        self._streamed_agent_text = ""
+                        self._current_streamed_agent_item_id = None
+                        if suffix:
+                            return AgentEvent(type=EventType.TEXT, text=suffix)
+                        return None
+
+                    self._streamed_agent_text = ""
+                    self._current_streamed_agent_item_id = None
+
+                return AgentEvent(type=EventType.TEXT, text=text)
         return None
 
     def _on_tool_output(self, method: str, payload: Any) -> AgentEvent | None:
@@ -513,9 +751,32 @@ class CodexAgentClient:
         )
 
     def _on_turn_completed(self, method: str, payload: Any) -> AgentEvent | None:
-        """Handle turn/completed — signals end of turn."""
-        # We emit RESULT in receive_events() after the stream ends,
-        # so this is just metadata.
+        """Handle turn/completed — signals end of turn.  Surfaces failure
+        info because codex sometimes ends a turn with status=failed and no
+        item notifications (e.g. expired auth token), which would otherwise
+        look like "silent nothing" to the bot user."""
+        turn = getattr(payload, "turn", None)
+        status = getattr(turn, "status", None)
+        error = getattr(turn, "error", None)
+
+        if status is not None and str(status) not in ("completed", "TurnStatus.completed"):
+            logger.warning("Codex turn ended status=%s error=%s", status, error)
+            error_msg = ""
+            if error is not None:
+                error_msg = (
+                    getattr(error, "message", None)
+                    or getattr(error, "detail", None)
+                    or str(error)
+                )
+            return AgentEvent(
+                type=EventType.ERROR,
+                metadata={
+                    "error": f"Codex turn {status}: {error_msg}" if error_msg else f"Codex turn {status}",
+                    "turn_completed": True,
+                    "session_id": self._session_id,
+                },
+            )
+
         return AgentEvent(
             type=EventType.SYSTEM,
             metadata={

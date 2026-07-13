@@ -40,6 +40,14 @@ from .notifiers.wechat_notifier import WeChatNotifier
 from .schedule_loader import load_all_schedules, resolve_env_vars
 from .trigger_engine import TriggerEngine
 
+try:
+    from .notifiers.teams_reply_notifier import TeamsReplyNotifier
+except ImportError as e:
+    TeamsReplyNotifier = None
+    TEAMS_REPLY_IMPORT_ERROR = e
+else:
+    TEAMS_REPLY_IMPORT_ERROR = None
+
 
 class SchedulerDaemon:
     """
@@ -72,6 +80,8 @@ class SchedulerDaemon:
 
         self.trigger_engine = TriggerEngine()
         self.schedules: List[ScheduleDefinition] = []
+        self._schedules_signature = None
+        self._trigger_fingerprints: Dict[str, str] = {}
         self._running = False
         self._active_tasks: Dict[str, asyncio.Task] = {}
 
@@ -84,6 +94,12 @@ class SchedulerDaemon:
             "webhook": WebhookNotifier(notif_config),
             "email": EmailNotifier(notif_config),
         }
+        if TeamsReplyNotifier is not None:
+            # Replies into the originating Teams chat for whitelisted
+            # senders only; designed to pair with a teams_message trigger.
+            self._notifiers["teams_reply"] = TeamsReplyNotifier(notif_config)
+        elif TEAMS_REPLY_IMPORT_ERROR is not None:
+            print(f"  Teams reply notifier disabled: {TEAMS_REPLY_IMPORT_ERROR}")
 
         # Defaults
         self.defaults = self.config.get("defaults", {})
@@ -112,12 +128,50 @@ class SchedulerDaemon:
             return
 
         print(f"Loading schedules from {self.schedules_dir}:")
+        old_triggers = getattr(self.trigger_engine, "_triggers", {})
+        old_fingerprints = self._trigger_fingerprints
+        self.trigger_engine = TriggerEngine()
         self.schedules = load_all_schedules(self.schedules_dir)
 
+        trigger_fingerprints = {}
         for schedule in self.schedules:
-            self.trigger_engine.register(schedule)
+            trigger_fingerprint = repr(schedule.trigger)
+            old_trigger = old_triggers.get(schedule.name)
+            if (
+                old_trigger is not None
+                and old_fingerprints.get(schedule.name) == trigger_fingerprint
+            ):
+                self.trigger_engine._triggers[schedule.name] = old_trigger
+            else:
+                self.trigger_engine.register(schedule)
+            trigger_fingerprints[schedule.name] = trigger_fingerprint
 
+        self._trigger_fingerprints = trigger_fingerprints
+        self._schedules_signature = self._schedule_files_signature()
         print(f"Loaded {len(self.schedules)} active schedule(s)\n")
+
+    def _schedule_files_signature(self):
+        """Return a cheap signature for schedule files."""
+        if not self.schedules_dir.exists():
+            return ()
+        signature = []
+        for path in sorted(self.schedules_dir.glob("*.yaml")):
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            signature.append((str(path), stat.st_mtime_ns, stat.st_size))
+        return tuple(signature)
+
+    def _maybe_reload_schedules(self):
+        """Reload schedules when YAML files changed while the daemon is running."""
+        current_signature = self._schedule_files_signature()
+        if self._schedules_signature is None:
+            self._schedules_signature = current_signature
+            return
+        if current_signature != self._schedules_signature:
+            print("Schedule files changed; reloading schedules...")
+            self.load_schedules()
 
     def _find_schedule(self, name: str) -> Optional[ScheduleDefinition]:
         """Find a schedule by name."""
@@ -165,7 +219,12 @@ class SchedulerDaemon:
             if once:
                 break
 
-            await asyncio.sleep(self.poll_interval)
+            # Sleep in 1-second ticks so Ctrl+C feels responsive instead of
+            # blocking up to `poll_interval` seconds on a single sleep call.
+            for _ in range(self.poll_interval):
+                if not self._running:
+                    break
+                await asyncio.sleep(1)
 
         # Cancel any running tasks on shutdown
         if self._active_tasks:
@@ -173,6 +232,17 @@ class SchedulerDaemon:
             for task in self._active_tasks.values():
                 task.cancel()
             await asyncio.gather(*self._active_tasks.values(), return_exceptions=True)
+
+        # Drop the Teams fetch pool — worker threads are daemon, so the
+        # process can exit even if a Graph call hasn't returned. Without
+        # this, an in-flight `requests.get` would block process exit until
+        # its 30s socket timeout fires.
+        try:
+            from .triggers.teams_trigger import _FETCH_POOL
+
+            _FETCH_POOL.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
         print("Scheduler daemon stopped.")
 
@@ -190,8 +260,13 @@ class SchedulerDaemon:
     async def _poll_cycle(self):
         """Single poll cycle: evaluate all triggers and dispatch as needed."""
         now = datetime.now()
+        self._maybe_reload_schedules()
 
         for schedule in self.schedules:
+            # Check shutdown between schedules so Ctrl+C interrupts the
+            # cycle quickly instead of waiting for every trigger to evaluate.
+            if not self._running:
+                break
             if not schedule.enabled:
                 continue
 
@@ -200,8 +275,11 @@ class SchedulerDaemon:
                 if schedule.name in self._active_tasks:
                     continue
 
-            # Evaluate trigger
-            result = self.trigger_engine.evaluate(schedule.name)
+            # Evaluate trigger off the event loop so the loop stays responsive
+            # to signals (Ctrl+C) while a slow Graph/HTTP poll is in flight.
+            result = await asyncio.to_thread(
+                self.trigger_engine.evaluate, schedule.name
+            )
 
             if result.fired:
                 print(
@@ -244,10 +322,17 @@ class SchedulerDaemon:
                     value = value.replace(f"{{{{{tvar}}}}}", str(tval))
             resolved_params[key] = value
 
-        # Determine model and max_iterations (schedule > defaults > hardcoded)
-        model = (
-            schedule.task.model
-            or self.defaults.get("model", "claude-sonnet-4-5-20250929")
+        # Determine backend/model (schedule > defaults > backend default)
+        backend = (
+            schedule.task.backend
+            or self.defaults.get("backend")
+            or self.defaults.get("default_backend")
+            or "codex"
+        )
+        model = _resolve_model_for_backend(
+            backend=backend,
+            schedule_model=schedule.task.model,
+            default_model=self.defaults.get("model"),
         )
         effort = schedule.task.effort or self.defaults.get("effort")
 
@@ -257,7 +342,9 @@ class SchedulerDaemon:
         last_response = ""
         retries = 0
 
-        timeout_minutes = schedule.timeout_minutes or self.defaults.get("timeout_minutes", 60)
+        timeout_minutes = schedule.timeout_minutes or self.defaults.get(
+            "timeout_minutes", 60
+        )
         print(f"  Timeout: {timeout_minutes} minutes")
 
         while retries <= schedule.retry.max_retries:
@@ -265,7 +352,13 @@ class SchedulerDaemon:
                 if schedule.task.task_type == "inline":
                     # Inline task: direct prompt execution
                     result = await asyncio.wait_for(
-                        self._execute_inline(schedule, model, template_vars, effort=effort),
+                        self._execute_inline(
+                            schedule,
+                            model,
+                            template_vars,
+                            effort=effort,
+                            backend=backend,
+                        ),
                         timeout=timeout_minutes * 60,
                     )
                     success = result["success"]
@@ -276,7 +369,13 @@ class SchedulerDaemon:
                 else:
                     # Standard task: use existing run_long_task()
                     result = await asyncio.wait_for(
-                        self._execute_standard(schedule, model, resolved_params, effort=effort),
+                        self._execute_standard(
+                            schedule,
+                            model,
+                            resolved_params,
+                            effort=effort,
+                            backend=backend,
+                        ),
                         timeout=timeout_minutes * 60,
                     )
                     success = result["success"]
@@ -284,6 +383,20 @@ class SchedulerDaemon:
                     iterations = result.get("iterations", 0)
                     if not success:
                         error_msg = "Task completed but success conditions not met"
+
+                if success and not str(last_response or "").strip():
+                    success = False
+                    error_msg = (
+                        "Task completed without final response text; "
+                        "refusing to send a blank success notification"
+                    )
+                    print(f"  Task {schedule.name}: {error_msg}")
+
+                response_error = _detect_agent_error_response(last_response)
+                if success and response_error:
+                    success = False
+                    error_msg = response_error
+                    print(f"  Task {schedule.name}: {error_msg}")
 
                 if success:
                     break
@@ -325,7 +438,9 @@ class SchedulerDaemon:
             "schedule_name": schedule.name,
             "duration": duration_str,
             "iterations": iterations,
-            "last_response": last_response[:5000],  # Truncate for notifications
+            # 20000 chars (~10k 中文) covers a thorough Opus PR review.
+            # Feishu interactive cards comfortably handle this size.
+            "last_response": last_response[:20000],
             "status": "SUCCESS" if success else "FAILED",
             "error": error_msg or "",
             "date": today_str,
@@ -351,9 +466,10 @@ class SchedulerDaemon:
     async def _execute_standard(
         self,
         schedule: ScheduleDefinition,
-        model: str,
+        model: str | None,
         resolved_params: Dict[str, Any],
         effort: str | None = None,
+        backend: str = "codex",
     ) -> Dict[str, Any]:
         """Execute a standard task via run_long_task()."""
         max_iters = schedule.task.max_iterations or self.defaults.get(
@@ -364,7 +480,10 @@ class SchedulerDaemon:
 
         print(f"  Executing standard task: {schedule.task.name}")
         print(f"  Project dir: {project_dir}")
-        print(f"  Model: {model}, Max iterations: {max_iters}, Effort: {effort or 'default'}")
+        print(
+            f"  Backend: {backend}, Model: {model or '(backend default)'}, "
+            f"Max iterations: {max_iters}, Effort: {effort or 'default'}"
+        )
 
         success = await run_long_task(
             task_name=schedule.task.name,
@@ -374,6 +493,7 @@ class SchedulerDaemon:
             max_iterations=max_iters,
             resume=False,
             effort=effort,
+            backend=backend,
         )
 
         # Read state file for last_response
@@ -399,9 +519,10 @@ class SchedulerDaemon:
     async def _execute_inline(
         self,
         schedule: ScheduleDefinition,
-        model: str,
+        model: str | None,
         template_vars: Dict[str, Any],
         effort: str | None = None,
+        backend: str = "codex",
     ) -> Dict[str, Any]:
         """Execute an inline prompt task."""
         prompt = schedule.task.prompt or ""
@@ -420,11 +541,10 @@ class SchedulerDaemon:
             model=model,
             max_turns=max_turns,
             effort=effort,
+            backend=backend,
         )
 
-    async def _send_notifications(
-        self, notifications, context: Dict[str, Any]
-    ):
+    async def _send_notifications(self, notifications, context: Dict[str, Any]):
         """Send all configured notifications."""
         for notif in notifications:
             notifier = self._notifiers.get(notif.type)
@@ -441,14 +561,119 @@ class SchedulerDaemon:
         if not self._running:
             print("\nForce shutdown...")
             import os
+
             os._exit(1)
         print("\nShutdown signal received...")
         self._running = False
 
 
+CLAUDE_DEFAULT_MODEL = "claude-opus-4-8"
+CODEX_DEFAULT_MODEL = "gpt-5.6-sol"
+BACKEND_MODEL_SENTINELS = {"claude", "codex", "opencode"}
+AUTO_MODEL_SENTINELS = {"", "auto", "default", "backend-default"}
+
+
+def _is_auto_model_setting(model: str | None) -> bool:
+    return model is None or str(model).strip().lower() in AUTO_MODEL_SENTINELS
+
+
+def _is_claude_model_setting(model: str | None) -> bool:
+    if not model:
+        return False
+    value = str(model).strip()
+    return value.startswith("claude-") or value.startswith("glm-")
+
+
+def _claude_settings_default_model() -> str | None:
+    """Read the Claude Code/cc-switch Opus default model if available."""
+    settings_path = Path.home() / ".claude" / "settings.json"
+    try:
+        with open(settings_path) as f:
+            settings = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    env = settings.get("env", {})
+    opus_default = env.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+    if opus_default:
+        return opus_default
+
+    selected = str(settings.get("model") or "").strip().upper()
+    if selected:
+        value = env.get(f"ANTHROPIC_DEFAULT_{selected}_MODEL")
+        if value:
+            return value
+
+    for family in ("OPUS", "SONNET", "HAIKU", "FABLE"):
+        value = env.get(f"ANTHROPIC_DEFAULT_{family}_MODEL")
+        if value:
+            return value
+    return None
+
+
+def _default_model_for_backend(backend: str) -> str | None:
+    backend = (backend or "claude").lower().strip()
+    if backend == "codex":
+        return CODEX_DEFAULT_MODEL
+    if backend == "opencode":
+        return None
+    return _claude_settings_default_model() or CLAUDE_DEFAULT_MODEL
+
+
+def _resolve_model_for_backend(
+    backend: str,
+    schedule_model: str | None,
+    default_model: str | None,
+) -> str | None:
+    if schedule_model and not _is_auto_model_setting(schedule_model):
+        return schedule_model
+
+    backend = (backend or "claude").lower().strip()
+    default_value = str(default_model or "").strip()
+    default_lower = default_value.lower()
+    if backend == "codex":
+        if (
+            _is_auto_model_setting(default_model)
+            or default_lower in BACKEND_MODEL_SENTINELS
+            or _is_claude_model_setting(default_model)
+        ):
+            return _default_model_for_backend(backend)
+    elif backend == "opencode":
+        # OpenCode model ids are provider/model. If the global default is a
+        # Claude/Codex model name, omit --model so OpenCode uses opencode.json.
+        if default_model and "/" in default_value:
+            return default_model
+        return None
+    elif backend == "claude":
+        if (
+            _is_auto_model_setting(default_model)
+            or default_lower in BACKEND_MODEL_SENTINELS
+            or default_value.startswith("gpt-")
+            or "/" in default_value
+        ):
+            return _default_model_for_backend(backend)
+
+    return default_model or _default_model_for_backend(backend)
+
+
+def _detect_agent_error_response(response: str) -> str | None:
+    """Detect synthetic SDK/API error text that should not be a success."""
+    text = str(response or "").strip()
+    if not text:
+        return None
+    error_prefixes = (
+        "API Error:",
+        "SDK Error:",
+        "Agent Error:",
+    )
+    if text.startswith(error_prefixes):
+        return text.splitlines()[0][:300]
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Claude Long-Runner Scheduler Daemon",
+        description="Vurtnec Loom Scheduler Daemon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
