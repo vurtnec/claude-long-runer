@@ -350,7 +350,7 @@ Supported browser tools:
 ## Dependencies
 
 ```
-Codex-agent-sdk>=0.1.47
+openai-codex>=0.1.0b3,<0.2
 pyyaml>=6.0
 croniter>=2.0.0
 lark-oapi>=1.4.0

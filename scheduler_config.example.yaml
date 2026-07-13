@@ -47,8 +47,8 @@ history:
 # Default values for all scheduled tasks (overridable per schedule)
 defaults:
   backend: "codex" # claude | codex | opencode. Schedules can override per task.
-  model: "gpt-5.5" # Use "auto" for backend defaults. Claude auto follows cc-switch Opus, then claude-opus-4-8. OpenCode models use provider/model.
-  effort: "xhigh" # Thinking depth: low, medium, high, xhigh, max (omit to use CLI default)
+  model: "gpt-5.6-sol" # GPT-5.6 preview access is required. Use "auto" for backend defaults. Claude auto follows cc-switch Opus, then claude-opus-4-8. OpenCode models use provider/model.
+  effort: "high" # Thinking depth: low, medium, high, xhigh, max (omit to use CLI default)
   max_iterations: 10
   timeout_minutes: 120
 
@@ -58,8 +58,8 @@ feishu_bot:
   # Default backend for new sessions: claude, codex, or opencode.
   # Users can override per-chat with /backend, or per-project below.
   default_backend: "codex"
-  model: "gpt-5.5" # Use "auto" to follow cc-switch Opus for Claude, or Claude Opus 4.8 without cc-switch.
-  effort: "xhigh" # Default effort for bot sessions (omit to use CLI default)
+  model: "gpt-5.6-sol" # GPT-5.6 preview access is required. Use "auto" to follow cc-switch Opus for Claude, or Claude Opus 4.8 without cc-switch.
+  effort: "high" # Default effort for bot sessions (omit to use CLI default)
   # Default permission mode for new bot sessions when /mode is not used.
   # Friendly aliases: plan | ask | auto | edits | bypass
   # Or raw SDK values: default | acceptEdits | plan | auto | bypassPermissions | dontAsk
@@ -77,7 +77,7 @@ feishu_bot:
   #     alias:
   #       path: "/path/to/project"
   #       restricted: true           # Restrict bash commands to paths within the project directory
-  #       model: "gpt-5.5"          # Default model for this project (inherits global if unset)
+  #       model: "gpt-5.6-sol"      # Default model for this project (inherits global if unset)
   #                                 # For Claude: "auto" follows cc-switch Opus, then claude-opus-4-8.
   #                                 # For OpenCode: "provider/model", or omit to use opencode.json.
   #       backend: "codex"           # Per-project backend override (claude | codex | opencode)
@@ -86,7 +86,7 @@ feishu_bot:
       path: "/path/to/your/project"
       restricted: true # Enable directory restriction
       backend: "codex"
-      model: "gpt-5.5"
+      model: "gpt-5.6-sol"
       effort: "high" # Per-project effort level
     another: "/path/to/another/project" # Legacy format, no restriction, inherits global model
   default_project: "my-project" # Default project alias

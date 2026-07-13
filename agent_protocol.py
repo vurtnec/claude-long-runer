@@ -220,14 +220,18 @@ def create_agent_client(
         )
 
     elif backend == "codex":
-        from codex_agent import CodexAgentClient
+        from codex_agent import (
+            DEFAULT_CODEX_EFFORT,
+            DEFAULT_CODEX_MODEL,
+            CodexAgentClient,
+        )
 
         return CodexAgentClient(
             project_dir=project_dir,
-            model=model or "gpt-5.5",
+            model=model or DEFAULT_CODEX_MODEL,
             approval_policy=permission_mode,
             resume_thread_id=resume,
-            effort=effort,
+            effort=effort or DEFAULT_CODEX_EFFORT,
             max_turns=max_turns,
             **extra,
         )

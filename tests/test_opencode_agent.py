@@ -192,7 +192,7 @@ class OpenCodeSchedulerRoutingTests(unittest.TestCase):
             resolve_daemon_model(
                 backend="opencode",
                 schedule_model=None,
-                default_model="gpt-5.5",
+                default_model="gpt-5.6-sol",
             )
         )
 
@@ -211,7 +211,7 @@ class OpenCodeSchedulerRoutingTests(unittest.TestCase):
             resolve_feishu_schedule_model(
                 backend="opencode",
                 schedule_model="github-copilot/gpt-5.4",
-                default_model="gpt-5.5",
+                default_model="gpt-5.6-sol",
             ),
             "github-copilot/gpt-5.4",
         )
@@ -224,7 +224,7 @@ class OpenCodeSchedulerRoutingTests(unittest.TestCase):
                 resolve_daemon_model(
                     backend="claude",
                     schedule_model=None,
-                    default_model="gpt-5.5",
+                    default_model="gpt-5.6-sol",
                 ),
                 "glm-5.2[1M]",
             )
@@ -239,7 +239,7 @@ class OpenCodeSchedulerRoutingTests(unittest.TestCase):
                 resolve_daemon_model(
                     backend="claude",
                     schedule_model="auto",
-                    default_model="gpt-5.5",
+                    default_model="gpt-5.6-sol",
                 ),
                 "claude-opus-4-8",
             )
@@ -254,7 +254,7 @@ class OpenCodeSchedulerRoutingTests(unittest.TestCase):
                 resolve_feishu_schedule_model(
                     backend="claude",
                     schedule_model=None,
-                    default_model="gpt-5.5",
+                    default_model="gpt-5.6-sol",
                 ),
                 "glm-5.2[1M]",
             )
@@ -270,7 +270,7 @@ class OpenCodeFeishuCommandTests(unittest.TestCase):
         bot._chat_models = {}
         bot._chat_modes = {}
         bot.default_backend = "codex"
-        bot.default_model = "gpt-5.5"
+        bot.default_model = "gpt-5.6-sol"
         bot.default_mode = "auto"
         bot._loop = None
         bot.default_project_dir = Path("/tmp")
@@ -292,7 +292,7 @@ class OpenCodeFeishuCommandTests(unittest.TestCase):
 
     def test_backend_opencode_resets_model_to_opencode_default(self):
         bot = self._bot()
-        bot._chat_models["chat-1"] = "gpt-5.5"
+        bot._chat_models["chat-1"] = "gpt-5.6-sol"
 
         bot._handle_backend("opencode", "chat-1", "msg-1")
 
@@ -350,7 +350,7 @@ class OpenCodeFeishuCommandTests(unittest.TestCase):
         feishu_bot_module._claude_settings_default_model = lambda: "glm-5.2[1M]"
         try:
             self.assertEqual(
-                bot._resolve_model_for_backend("claude", "gpt-5.5"),
+                bot._resolve_model_for_backend("claude", "gpt-5.6-sol"),
                 "glm-5.2[1M]",
             )
         finally:
@@ -402,7 +402,7 @@ class OpenCodeFeishuCommandTests(unittest.TestCase):
     def test_claude_model_dropdown_includes_cc_switch_default(self):
         bot = self._bot()
         bot._chat_backends["chat-1"] = "claude"
-        bot.default_model = "gpt-5.5"
+        bot.default_model = "gpt-5.6-sol"
 
         original = feishu_bot_module._claude_settings_default_model
         feishu_bot_module._claude_settings_default_model = lambda: "glm-5.2[1M]"
@@ -417,7 +417,7 @@ class OpenCodeFeishuCommandTests(unittest.TestCase):
 
     def test_backend_claude_message_shows_cc_switch_default(self):
         bot = self._bot()
-        bot.default_model = "gpt-5.5"
+        bot.default_model = "gpt-5.6-sol"
 
         original = feishu_bot_module._claude_settings_default_model
         feishu_bot_module._claude_settings_default_model = lambda: "glm-5.2[1M]"
@@ -431,7 +431,7 @@ class OpenCodeFeishuCommandTests(unittest.TestCase):
 
     def test_claude_default_falls_back_when_cc_switch_is_absent(self):
         bot = self._bot()
-        bot.default_model = "gpt-5.5"
+        bot.default_model = "gpt-5.6-sol"
 
         original = feishu_bot_module._claude_settings_default_model
         feishu_bot_module._claude_settings_default_model = lambda: None

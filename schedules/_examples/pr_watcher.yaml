@@ -26,7 +26,8 @@ task:
     pr_number: "{{trigger.http_response[0].number}}"
   project_dir: "/path/to/repo"
   backend: "codex"
-  model: "gpt-5.5"
+  model: "gpt-5.6-sol"
+  effort: "high"
   max_iterations: 5
 
 notifications:

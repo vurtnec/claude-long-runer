@@ -568,7 +568,7 @@ class SchedulerDaemon:
 
 
 CLAUDE_DEFAULT_MODEL = "claude-opus-4-8"
-CODEX_DEFAULT_MODEL = "gpt-5.5"
+CODEX_DEFAULT_MODEL = "gpt-5.6-sol"
 BACKEND_MODEL_SENTINELS = {"claude", "codex", "opencode"}
 AUTO_MODEL_SENTINELS = {"", "auto", "default", "backend-default"}
 

@@ -2,38 +2,39 @@
 Codex Agent Client — AgentClient implementation backed by OpenAI Codex Python SDK.
 ====================================================================================
 
-Wraps the Codex Python SDK (codex-app-server-sdk) to expose the unified
+Wraps the official OpenAI Codex Python SDK (openai-codex) to expose the unified
 AgentClient protocol.
 
-Installation (SDK is not yet on PyPI — install from source):
+Installation:
 
-    git clone https://github.com/openai/codex.git
-    cd codex/sdk/python
-    pip install -e .
+    pip install openai-codex
 
 Known issues & workarounds (as of 2026-04):
   - Issue #16554: 64 KiB stdio crash → avoid prompts > 60 KB
   - Issue #17829: FileChangeItem.status rejects "in_progress"
                   → caught below with try/except on each notification
   - Issue #19348: Unrecognised notification types → logged, not crashed
+  - The 0.1.0b3 generated schema predates GPT-5.6 max/ultra effort values
+                  → raw notifications are normalized below for newer CLIs
 
 Upgrade strategy:
   - ALL Codex SDK imports are in this file.  No other module imports codex_*.
   - Notification handling is defensive (unknown types → warning, not crash).
-  - When the SDK publishes to PyPI, just change the install command.
   - When APIs change, only this file needs updating.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
-from agent_protocol import AgentClient, AgentEvent, EventType, Feature
+from agent_protocol import AgentEvent, EventType, Feature
 
 logger = logging.getLogger(__name__)
 
@@ -46,23 +47,18 @@ _CODEX_SDK_AVAILABLE = False
 _CODEX_IMPORT_ERROR: str | None = None
 
 try:
-    from codex_app_server import AsyncCodex
-    from codex_app_server._inputs import TextInput
-    from codex_app_server.client import AppServerConfig
+    from openai_codex import ApprovalMode, AsyncCodex, CodexConfig, TextInput
 
     _CODEX_SDK_AVAILABLE = True
 except ImportError as exc:
     _CODEX_IMPORT_ERROR = (
         f"Codex SDK not installed ({exc}).\n"
         "\n"
-        "Install from source:\n"
-        "  pip install git+https://github.com/openai/codex.git#subdirectory=sdk/python\n"
+        "Install the official OpenAI package from PyPI:\n"
+        "  pip install openai-codex\n"
         "\n"
-        "You also need the codex CLI binary installed (npm install -g @openai/codex,\n"
-        "or brew install codex).\n"
-        "\n"
-        "Or, when the SDK is published to PyPI with bundled binary:\n"
-        "  pip install codex-app-server-sdk"
+        "The package installs a bundled Codex CLI fallback automatically; "
+        "preview models may require a newer standalone Codex CLI."
     )
 
 
@@ -84,7 +80,8 @@ _EFFORT_MAP = {
     "none": "none",
 }
 
-DEFAULT_CODEX_MODEL = "gpt-5.5"
+DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
+DEFAULT_CODEX_EFFORT = "high"
 
 
 def _normalize_effort(value: str | None) -> str | None:
@@ -97,41 +94,40 @@ def _normalize_effort(value: str | None) -> str | None:
     return mapped
 
 
-# Approval policy mapping: Claude/bot permission_mode → Codex approval_policy.
-# Codex valid values: untrusted, on-failure, on-request, never
-# Claude/bot values:  plan, default, auto, acceptEdits, bypassPermissions
-_APPROVAL_POLICY_MAP = {
-    # Claude vocab → Codex equivalent
-    "plan":              "untrusted",     # plan-only ≈ most restrictive
-    "default":           "untrusted",     # ask-before-everything
-    "acceptedits":       "on-failure",    # auto-accept edits, ask on failure
-    "auto":              "on-request",    # auto-determine, ask when prompted
-    "bypasspermissions": "never",         # full auto
-    "bypass":            "never",
-    # Pass-through for native Codex values
-    "untrusted":   "untrusted",
-    "on-failure":  "on-failure",
-    "on-request":  "on-request",
-    "never":       "never",
+# The published SDK exposes two high-level approval modes.  Keep accepting the
+# bot's legacy Claude/Codex vocabulary, but translate it at this boundary.
+_DENY_ALL_APPROVAL_VALUES = {
+    "bypass",
+    "bypasspermissions",
+    "dontask",
+    "never",
+}
+_AUTO_REVIEW_APPROVAL_VALUES = {
+    "acceptedits",
+    "auto",
+    "autoreview",
+    "default",
+    "onfailure",
+    "onrequest",
+    "plan",
+    "untrusted",
 }
 
 
 def _normalize_approval_policy(value: str | None) -> str | None:
-    """Translate a Claude/bot permission_mode to a Codex approval_policy."""
+    """Translate a Claude/bot permission_mode to an SDK ApprovalMode value."""
     if value is None:
         return None
     key = value.lower().strip().replace("_", "").replace("-", "")
-    # Try the unhyphenated key first, then fall back to the original (covers
-    # native Codex values which contain hyphens, e.g. "on-failure").
-    mapped = _APPROVAL_POLICY_MAP.get(key) or _APPROVAL_POLICY_MAP.get(
-        value.lower().strip()
+    if key in _DENY_ALL_APPROVAL_VALUES:
+        return "deny_all"
+    if key in _AUTO_REVIEW_APPROVAL_VALUES:
+        return "auto_review"
+    logger.warning(
+        "Unknown approval_policy value %r, dropping (Codex will use default)",
+        value,
     )
-    if mapped is None:
-        logger.warning(
-            "Unknown approval_policy value %r, dropping (Codex will use default)",
-            value,
-        )
-    return mapped
+    return None
 
 
 def _unwrap_thread_item(item: Any) -> Any:
@@ -148,6 +144,21 @@ def _unwrap_thread_item(item: Any) -> Any:
         return None
     inner = getattr(item, "root", None)
     return inner if inner is not None else item
+
+
+def _namespace_from_json(value: Any) -> Any:
+    """Convert raw forward-compatible SDK payload dictionaries to objects."""
+    if isinstance(value, dict):
+        return SimpleNamespace(
+            **{
+                str(key): _namespace_from_json(item)
+                for key, item in value.items()
+                if str(key).isidentifier()
+            }
+        )
+    if isinstance(value, list):
+        return [_namespace_from_json(item) for item in value]
+    return value
 
 
 def _get_item_id(*objects: Any) -> str | None:
@@ -196,7 +207,7 @@ async def list_codex_threads(project_dir: str, limit: int = 10) -> list[dict]:
     from datetime import datetime as _dt
 
     codex_bin = _resolve_codex_bin()
-    config = AppServerConfig(codex_bin=codex_bin) if codex_bin else None
+    config = CodexConfig(codex_bin=codex_bin) if codex_bin else None
     codex = AsyncCodex(config=config) if config else AsyncCodex()
 
     # Codex's thread_list defaults to "interactive sources" only — which
@@ -296,12 +307,11 @@ def _resolve_codex_bin() -> str | None:
 
     Priority:
       1. CODEX_BIN environment variable (explicit override)
-      2. `codex` on PATH (e.g. installed via npm or homebrew)
-      3. None → let the SDK use its bundled runtime (if available)
+      2. `codex` on PATH (kept current by the operator)
+      3. None → the SDK's bundled `openai-codex-cli-bin` fallback
 
-    The SDK published to PyPI bundles `openai-codex-cli-bin`, but the
-    install-from-source path does NOT include the binary.  This resolver
-    bridges the gap.
+    Preview models can require a CLI newer than the Python SDK's bundled
+    runtime, so an up-to-date standalone CLI takes precedence when available.
     """
     explicit = os.environ.get("CODEX_BIN")
     if explicit and Path(explicit).is_file():
@@ -371,7 +381,7 @@ class CodexAgentClient:
         model: str = DEFAULT_CODEX_MODEL,
         approval_policy: str | None = None,
         resume_thread_id: str | None = None,
-        effort: str | None = None,
+        effort: str | None = DEFAULT_CODEX_EFFORT,
         max_turns: int = 1000,
         **extra,
     ):
@@ -413,16 +423,16 @@ class CodexAgentClient:
         Start the Codex app-server subprocess and open (or resume) a thread.
 
         Parameter mapping (Codex SDK separates thread-level vs turn-level):
-          - thread_start(): model, cwd, approval_policy   (set once)
+          - thread_start(): model, cwd, approval_mode     (set once)
           - thread.turn():  effort, model override        (per-message)
         So `effort` is stored on self and applied in send_message().
         """
-        # Build AppServerConfig — explicitly point to the codex binary if
-        # the bundled runtime isn't available (source-install workaround).
+        # Prefer an explicit/current standalone CLI because preview models can
+        # require a newer runtime than the SDK bundle. Fall back to the bundle.
         codex_bin = _resolve_codex_bin()
         if codex_bin:
             logger.info("Using codex binary at %s", codex_bin)
-            config = AppServerConfig(codex_bin=codex_bin)
+            config = CodexConfig(codex_bin=codex_bin)
             self._codex = AsyncCodex(config=config)
         else:
             self._codex = AsyncCodex()
@@ -433,7 +443,7 @@ class CodexAgentClient:
         if self._project_dir:
             thread_kwargs["cwd"] = self._project_dir
         if self._approval_policy:
-            thread_kwargs["approval_policy"] = self._approval_policy
+            thread_kwargs["approval_mode"] = ApprovalMode(self._approval_policy)
 
         # Enable web browsing by default so the model can search / fetch URLs.
         # WebSearchMode: disabled | cached | live  — "live" hits the network.
@@ -509,6 +519,7 @@ class CodexAgentClient:
 
         try:
             async for notification in self._turn_handle.stream():
+                turn_completed = getattr(notification, "method", "") == "turn/completed"
                 try:
                     event = self._map_notification(notification)
                     if event is not None:
@@ -522,7 +533,15 @@ class CodexAgentClient:
                         getattr(notification, "method", "?"),
                         e,
                     )
+                    if turn_completed:
+                        break
                     continue
+                # A newer CLI may add fields/enums that the published SDK's
+                # generated TurnCompletedNotification does not yet know. The
+                # SDK then exposes a raw UnknownNotification and its own
+                # stream cannot recognize the terminator, so stop by method.
+                if turn_completed:
+                    break
         except Exception as e:
             # Stream-level error — yield as ERROR event so the caller can
             # decide how to handle it (e.g. show message to user). Skip the
@@ -545,7 +564,7 @@ class CodexAgentClient:
     def interrupt(self) -> None:
         if self._turn_handle:
             try:
-                self._turn_handle.interrupt()
+                asyncio.get_running_loop().create_task(self._turn_handle.interrupt())
             except Exception as e:
                 logger.warning("Codex interrupt error: %s", e)
 
@@ -571,6 +590,9 @@ class CodexAgentClient:
         """
         method: str = getattr(notification, "method", "")
         payload: Any = getattr(notification, "payload", None)
+        raw_params = getattr(payload, "params", None)
+        if isinstance(raw_params, dict):
+            payload = _namespace_from_json(raw_params)
 
         # Diagnostic — every notification, with payload type + key fields, so we
         # can see why a turn produced no TEXT events.  Set CODEX_DEBUG_NOTIFS=0

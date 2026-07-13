@@ -20,7 +20,8 @@ task:
     source_file: "{{trigger.changed_file}}"
   project_dir: "/path/to/project"
   backend: "codex"
-  model: "gpt-5.5"
+  model: "gpt-5.6-sol"
+  effort: "high"
   max_iterations: 5
 
 notifications:

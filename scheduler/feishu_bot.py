@@ -100,8 +100,11 @@ MODEL_DISPLAY = {v: k for k, v in MODEL_ALIASES.items()}
 BACKEND_ALIASES = {"claude", "codex", "opencode"}
 
 CODEX_MODEL_ALIASES = {
-    # Verified via codex.models() — 2026-04
-    "gpt-5.5": "gpt-5.5",  # default frontier
+    # GPT-5.6 is a limited preview and requires workspace access.
+    "gpt-5.6-sol": "gpt-5.6-sol",  # default flagship
+    "gpt-5.6-terra": "gpt-5.6-terra",
+    "gpt-5.6-luna": "gpt-5.6-luna",
+    "gpt-5.5": "gpt-5.5",
     "gpt-5.4": "gpt-5.4",
     "gpt-5.4-mini": "gpt-5.4-mini",
     "gpt-5.3-codex": "gpt-5.3-codex",
@@ -113,7 +116,7 @@ CODEX_MODEL_DISPLAY = {v: k for k, v in CODEX_MODEL_ALIASES.items()}
 # Default models per backend
 BACKEND_DEFAULT_MODELS = {
     "claude": "claude-opus-4-8",
-    "codex": "gpt-5.5",
+    "codex": "gpt-5.6-sol",
     "opencode": None,
 }
 
@@ -208,7 +211,7 @@ class ChatSession:
         self.permission_mode: str = "default"
         self.first_message: str | None = None
         self.project_alias: str | None = None
-        self.model: str | None = "gpt-5.5"
+        self.model: str | None = "gpt-5.6-sol"
         self.backend: str = "codex"  # "claude", "codex", or "opencode"
         self.custom_title: str | None = None
         # Progress tracking for /status command
@@ -274,7 +277,7 @@ class FeishuBotServer:
         bot_config = config.get("feishu_bot", {})
         self.default_model = bot_config.get(
             "model",
-            config.get("defaults", {}).get("model", "gpt-5.5"),
+            config.get("defaults", {}).get("model", "gpt-5.6-sol"),
         )
         self.default_effort: str | None = bot_config.get(
             "effort",
@@ -1554,7 +1557,7 @@ class FeishuBotServer:
             "/project — Show current project / switch project\n"
             "/backend [claude|codex|opencode] — Show or switch agent backend\n"
             "/mode [plan|ask|auto|edits] — Show or switch permission mode\n"
-            "/model [opus|sonnet|haiku|gpt-5.5|provider/model] — Show or switch model\n"
+            "/model [opus|sonnet|haiku|gpt-5.6-sol|provider/model] — Show or switch model\n"
             "/effort [low|medium|high|xhigh|max] — Show or switch effort level\n"
             "/rename <title> — Rename current session\n"
             "/resume [number] — List recent sessions / resume by number\n"
@@ -2096,7 +2099,7 @@ class FeishuBotServer:
         if arg is None:
             # Send a dropdown card with the models for the current backend.
             # The dropdown values are the user-friendly aliases (opus/sonnet/
-            # gpt-5.5 etc.); the existing _handle_model already accepts those.
+            # gpt-5.6-sol etc.); the existing _handle_model already accepts those.
             current_id = self._current_model_for_chat(chat_id, backend, session)
             if backend == "claude":
                 for model_id in (

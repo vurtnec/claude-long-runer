@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Default backend: Codex](https://img.shields.io/badge/default-Codex%20%2F%20GPT--5.5-10a37f.svg)](https://github.com/openai/codex)
+[![Default backend: Codex](https://img.shields.io/badge/default-Codex%20%2F%20GPT--5.6%20Sol-10a37f.svg)](https://github.com/openai/codex)
 [![Claude backend optional](https://img.shields.io/badge/Claude%20backend-optional-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code/sdk)
 
 **Weave AI agents into schedules, team chat, and persistent workflows — backed by Claude, Codex, or OpenCode.**
@@ -36,11 +36,12 @@ cd claude-long-runner
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
-# Install the Codex Python SDK.
-# Not yet on PyPI — install from source, pinned to a stable Codex CLI tag:
-pip install git+https://github.com/openai/codex.git@rust-v0.125.0#subdirectory=sdk/python
 ```
+
+`requirements.txt` installs OpenAI's published `openai-codex` Python SDK and
+its bundled Codex CLI runtime. Keep the standalone Codex CLI from the
+prerequisites updated: preview models can require a newer CLI than the SDK
+bundle. Loom uses `CODEX_BIN`, then `codex` on `PATH`, then the bundled runtime.
 
 ### 2. Configure
 
@@ -146,7 +147,8 @@ task:
   type: inline
   prompt: "Today is {{today}}. Summarize market highlights and tech news."
   backend: "codex"
-  model: "gpt-5.5"
+  model: "gpt-5.6-sol"
+  effort: "high"
   max_turns: 3
 notifications:
   on_success:
@@ -219,8 +221,8 @@ Each chat picks one backend at a time. Switching resets the session (similar to 
 
 | Aspect | Claude | Codex | OpenCode |
 |--------|--------|-------|----------|
-| Default model | cc-switch Opus mapping, or `claude-opus-4-8` | `gpt-5.5` | OpenCode config default |
-| Available models | `opus`, `sonnet`, `haiku` | `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2` | Raw `provider/model` |
+| Default model | cc-switch Opus mapping, or `claude-opus-4-8` | `gpt-5.6-sol` (`high`) | OpenCode config default |
+| Available models | `opus`, `sonnet`, `haiku` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2` | Raw `provider/model` |
 | Permission modes | Dynamic via `/mode` | Set at session start only | `bypass` maps to `--dangerously-skip-permissions`; otherwise OpenCode default |
 | Custom slash commands | `~/.claude/commands/*.md` | Codex CLI's mechanism | OpenCode commands/config |
 | Session resume | Per-chat history | Per-chat history | `opencode session list` / `--session` |
@@ -238,7 +240,8 @@ feishu_bot:
     my-python-app:
       path: /path/to/app
       backend: codex              # this project defaults to Codex
-      model: gpt-5.5
+      model: gpt-5.6-sol
+      effort: high
     my-web-app:
       path: /path/to/web
       backend: opencode
@@ -246,6 +249,10 @@ feishu_bot:
 ```
 
 Priority: `/backend` command > project config > `default_backend`.
+
+GPT-5.6 Sol, Terra, and Luna are currently limited-preview models. The Codex
+workspace used by the bot or scheduler must have preview access before these
+model IDs will run.
 
 For OpenCode, omit `model` to use the model configured in `opencode.json`; set `OPENCODE_BIN` only if the `opencode` executable is not on PATH. OpenCode MCP servers are configured by OpenCode itself, not migrated from Codex or Claude settings.
 
