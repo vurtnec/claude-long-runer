@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "loom.doc.v1",
+  "title": "Unified normalized document record",
+  "description": "Every item from every source maps into this shape. Source-specific fields are preserved under `raw`.",
+  "type": "object",
+  "required": ["id", "source", "type", "timestamps", "location", "content_hash"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "sha256(source.id + native_id) — stable global identifier."
+    },
+    "source": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "description": "Connector id, e.g. outlook, slack, sharepoint, local-fs." },
+        "account": { "type": "string", "description": "Which connected account this came from." }
+      }
+    },
+    "type": {
+      "type": "string",
+      "enum": ["email", "chat_message", "file", "doc", "calendar_event", "contact"]
+    },
+    "title": { "type": "string" },
+    "author": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "id": { "type": "string" }
+      }
+    },
+    "participants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "email": { "type": "string" },
+          "role": { "type": "string", "enum": ["to", "cc", "bcc", "attendee", "member", "author"] }
+        }
+      }
+    },
+    "timestamps": {
+      "type": "object",
+      "properties": {
+        "created": { "type": "string", "format": "date-time" },
+        "modified": { "type": "string", "format": "date-time" },
+        "event_start": { "type": ["string", "null"], "format": "date-time" },
+        "event_end": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "location": {
+      "type": "object",
+      "description": "Where the item lives; url is the citation deep link.",
+      "properties": {
+        "url": { "type": "string", "description": "Deep link back to the source item (used for citation)." },
+        "path": { "type": "string", "description": "Local filesystem path, if applicable." },
+        "container": { "type": "string", "description": "Channel, folder, label, or mailbox." }
+      }
+    },
+    "snippet": { "type": "string", "description": "Short preview (~280 chars) for display." },
+    "body_ref": { "type": "string", "description": "Pointer to extracted full text in the blob store, e.g. blobstore://sha256..." },
+    "content_hash": { "type": "string", "description": "sha256(normalized_text) — cross-source dedup key." },
+    "aliases": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Other locations of the same content (also_in)."
+    },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "acl": {
+      "type": "object",
+      "properties": {
+        "visibility": { "type": "string", "enum": ["private", "shared", "public"] },
+        "principals": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "lang": { "type": "string" },
+    "raw": { "type": "object", "description": "Verbatim source-specific fields." }
+  },
+  "examples": [
+    {
+      "id": "sha256:ab12...",
+      "source": { "id": "outlook", "account": "user@corp.com" },
+      "type": "email",
+      "title": "Re: Q3 budget review",
+      "author": { "name": "Jane", "email": "jane@x.com" },
+      "participants": [{ "name": "Bob", "email": "bob@x.com", "role": "to" }],
+      "timestamps": { "created": "2026-07-30T14:00:00Z", "modified": "2026-07-31T09:12:00Z" },
+      "location": {
+        "url": "https://outlook.office.com/mail/id/AAMk...",
+        "container": "Inbox/Finance"
+      },
+      "snippet": "First 280 chars of the message for preview...",
+      "body_ref": "blobstore://sha256:cd34...",
+      "content_hash": "sha256:cd34...",
+      "aliases": ["sharepoint://sites/finance/Shared%20Documents/q3-budget.xlsx"],
+      "tags": ["finance", "auto:has_attachment"],
+      "acl": { "visibility": "shared", "principals": ["user@corp.com", "group:finance"] },
+      "lang": "en"
+    }
+  ]
+}
