@@ -165,10 +165,20 @@ A runnable reference implementation of this pipeline (dry-run planner + executor
 - Connectors reuse `client.py`'s MCP loading model (`mcp__<server>__*` tool
   names, global + project resolution) — no new configuration mechanism.
 
-## 7. Open questions for the user
+## 7. Confirmed decisions
 
-1. **Local embedding model** — ship with a local embedder (privacy, offline) or
-   allow a remote one for quality? Default proposed: local-first.
-2. **Organizer destination** — organize into a *copy tree* (`Documents/Organized`,
-   safest) or restructure `~/Documents` in place? Default proposed: copy tree.
-3. **Which sources first** beyond the Phase-0 set already wired here?
+These were the three defaults recommended for the user's call; all three are
+**confirmed** and are what the shipped skills and `organize.py` implement:
+
+1. **Embeddings — local-first.** Ship with a local embedding model so content
+   never leaves the machine; a remote embedder stays available as an opt-in for
+   quality-sensitive workloads. (`unified-search/reference/architecture.md` §3, §5.)
+2. **Organizer destination — copy tree.** Organize into `~/Documents/Organized`
+   rather than restructuring `~/Documents` in place — the safest option and the
+   default `organize.config.yaml` `root`. In-place remains available by changing
+   `root` and `scan`. (`desktop-organizer/reference/taxonomy.md` §1.)
+3. **Sources — Phase-0 set first.** Start with the connectors already present in
+   this environment (Outlook email, Teams, SharePoint/OneDrive, Slack via Macro,
+   Google/Outlook calendar, local files, GitHub), then promote Cowork-native
+   Gmail/Drive/Slack to delta-sync connectors in Phase 1+.
+   (`unified-search/reference/connectors.md`.)
