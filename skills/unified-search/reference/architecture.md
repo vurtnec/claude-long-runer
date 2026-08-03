@@ -128,6 +128,6 @@ drill-down (see SKILL.md "Output").
 - **Phase 2:** macOS FSEvents connector (text extraction, OCR); native Gmail +
   Google Drive delta connectors for real push sync.
 - **Phase 3 — Extensibility GA:** publish the `SourceConnector` SDK +
-  `connector.yaml` manifest so users add sources (Notion, Jira, …) as drop-in
+  `connector.yaml` manifest so users add sources (Notion, Linear, …) as drop-in
   plugins; connector registry with capability negotiation and per-connector scope
   prompts.

@@ -16,7 +16,7 @@ touches user data until the user explicitly runs a skill.
 1. **One search box over everything.** Ask a natural-language question and get
    ranked, deduplicated, *cited* results drawn from every source the user has
    connected — email, chat, files, docs, calendar.
-2. **User-extensible sources.** Adding a new source (Notion, Jira, a local
+2. **User-extensible sources.** Adding a new source (Notion, Linear, a local
    folder) is dropping in a connector, not rewriting the engine.
 3. **A trustworthy desktop organizer.** Claude can tidy a messy Mac — Downloads,
    Desktop, Documents — into a clean, *optional* directory hierarchy, and it can
