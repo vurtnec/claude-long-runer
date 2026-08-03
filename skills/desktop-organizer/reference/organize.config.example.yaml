@@ -1,0 +1,63 @@
+# organize.config.yaml — user-configurable taxonomy for the desktop-organizer skill.
+#
+# Drop this file in your scan root (e.g. ~/Downloads) or at
+# ~/.config/cowork-organize/organize.config.yaml. If it is absent, the built-in
+# defaults apply. User rules are merged OVER defaults; the first matching rule
+# wins. The directory hierarchy is entirely optional — delete `folders`/`rules`
+# to fall back to defaults.
+
+version: 1
+
+# Destination tree. The organizer moves files here rather than restructuring
+# source folders in place.
+root: ~/Documents/Organized
+
+# Folders to drain into the tree (staging areas).
+scan:
+  - ~/Downloads
+  - ~/Desktop
+
+naming:
+  date_format: "%Y-%m-%d"   # strftime; prefixed to slug when a date is meaningful
+  case: kebab               # kebab | snake | title
+  max_len: 80
+
+# Globs never touched, in addition to the always-protected system paths.
+ignore:
+  - "**/.git/**"
+  - "**/*.app/**"
+  - "~/Library/**"
+  - "**/node_modules/**"
+  - "**/*.icloud"           # iCloud placeholders (not downloaded)
+  - "**/.DS_Store"          # matched here only to keep it out of scans; still quarantined if found
+
+# Your own taxonomy. `{project}`, `{year}`, `{month}` are filled from
+# classification. These override the default tree.
+folders:
+  Work:    { path: "Work/{project}/{year}" }
+  Finance: { path: "Personal/finance/{year}" }
+  Shots:   { path: "Media/Screenshots/{year}-{month}" }
+  Media:   { path: "Media/Photos/{year}/{year}-{month}" }
+  Code:    { path: "Code/{project}" }
+
+# First match wins. `to` references a key in `folders`, or a special target.
+rules:
+  - match: { name_regex: "(?i)invoice|receipt|statement" }
+    to: Finance
+  - match: { ext: [png], name_regex: "(?i)screenshot|cleanshot|screen shot" }
+    to: Shots
+  - match: { ext: [jpg, jpeg, heic, png] }
+    to: Media
+  - match: { ext: [py, js, ts, go, rs, java] }
+    to: Code
+  - match: { ext: [dmg, pkg] }
+    to: quarantine          # → Installers, flagged "suggest delete"
+  - match: { mime: "application/zip" }
+    to: "Archives/{year}"
+
+defaults:
+  unmatched: "_Review/unsorted"
+  quarantine: "_Review"
+  on_conflict: version      # version | skip | hash-suffix
+  duplicates: quarantine    # exact SHA-256 dupes → _Review/duplicates
+  never_delete: true        # hard invariant; do not set to false
